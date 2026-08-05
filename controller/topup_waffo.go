@@ -218,6 +218,12 @@ func RequestWaffoPay(c *gin.Context) {
 	}
 
 	// 创建本地订单
+	commissionBaseQuota, err := freezeCommissionBaseQuota(payMoney, commissionUnitPrice(setting.WaffoUnitPrice, group))
+	if err != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo 计算返佣基数失败 user_id=%d trade_no=%s error=%q", id, merchantOrderId, err.Error()))
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})
+		return
+	}
 	topUp := &model.TopUp{
 		UserId:          id,
 		Amount:          amount,
@@ -227,6 +233,11 @@ func RequestWaffoPay(c *gin.Context) {
 		PaymentProvider: model.PaymentProviderWaffo,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
+	}
+	if err := freezeCommissionSnapshot(topUp, user, commissionBaseQuota); err != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo 冻结返佣快照失败 user_id=%d trade_no=%s error=%q", id, merchantOrderId, err.Error()))
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})
+		return
 	}
 	if err := topUp.Insert(); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo 创建充值订单失败 user_id=%d trade_no=%s amount=%d error=%q", id, merchantOrderId, req.Amount, err.Error()))

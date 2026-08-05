@@ -21,6 +21,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestChannelTestOptionsPreserveExistingBehaviorByDefault(t *testing.T) {
+	options := defaultChannelTestOptions()
+
+	assert.Empty(t, options.UsingGroup)
+	assert.True(t, options.RecordConsumeLog)
+	assert.True(t, options.LogDetails)
+}
+
+func TestGroupProbeChannelTestOptionsDisablePersistentSideEffects(t *testing.T) {
+	options := groupProbeChannelTestOptions("  codex  ")
+
+	assert.Equal(t, "codex", options.UsingGroup)
+	assert.False(t, options.RecordConsumeLog)
+	assert.False(t, options.LogDetails)
+}
+
 func TestValidateChannelProxy(t *testing.T) {
 	tests := []struct {
 		name    string

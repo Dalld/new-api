@@ -29,6 +29,7 @@ import {
   Radio,
   ServerCog,
   Settings,
+  Share2,
   Ticket,
   User,
   Users,
@@ -36,7 +37,7 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { type SidebarData } from '@/components/layout/types'
+import type { SidebarData } from '@/components/layout/types'
 import { ROLE } from '@/lib/roles'
 
 /**
@@ -48,6 +49,10 @@ import { ROLE } from '@/lib/roles'
 export function useSidebarData(): SidebarData {
   const { t } = useTranslation()
 
+  return buildSidebarData(t)
+}
+
+export function buildSidebarData(t: (key: string) => string): SidebarData {
   return {
     navGroups: [
       {
@@ -109,6 +114,11 @@ export function useSidebarData(): SidebarData {
             icon: Wallet,
           },
           {
+            title: t('My Referrals'),
+            url: '/my-affiliate',
+            icon: Share2,
+          },
+          {
             title: t('Profile'),
             url: '/profile',
             icon: User,
@@ -133,6 +143,11 @@ export function useSidebarData(): SidebarData {
             title: t('Users'),
             url: '/users',
             icon: Users,
+          },
+          {
+            title: t('Affiliate Management'),
+            url: '/affiliate',
+            icon: Share2,
           },
           {
             title: t('Redemption Codes'),

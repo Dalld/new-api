@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Loader2 } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -76,9 +76,7 @@ export function TransferDialog({
     if (!canTransfer) return
 
     const success = await onConfirm(transferQuota)
-    if (success) {
-      onOpenChange(false)
-    }
+    if (success) onOpenChange(false)
   }
 
   return (
@@ -105,7 +103,9 @@ export function TransferDialog({
             onClick={handleConfirm}
             disabled={transferring || !canTransfer}
           >
-            {transferring && <Loader2 className='mr-2 h-4 w-4 animate-spin' />}
+            {transferring ? (
+              <Loader2 className='mr-2 size-4 animate-spin' />
+            ) : null}
             {t('Transfer')}
           </Button>
         </>
@@ -132,7 +132,7 @@ export function TransferDialog({
             id='transfer-amount'
             type='number'
             value={amount}
-            onChange={(e) => setAmount(Number(e.target.value))}
+            onChange={(event) => setAmount(Number(event.target.value))}
             min={minimumAmount}
             max={maximumAmount}
             step={minimumAmount}

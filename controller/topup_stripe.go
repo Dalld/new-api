@@ -23,7 +23,10 @@ import (
 	"github.com/thanhpk/randstr"
 )
 
-var stripeAdaptor = &StripeAdaptor{}
+var (
+	stripeAdaptor               = &StripeAdaptor{}
+	createStripeCheckoutSession = genStripeLink
+)
 
 // StripePayRequest represents a payment request for Stripe checkout.
 type StripePayRequest struct {
@@ -92,13 +95,12 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 	reference := fmt.Sprintf("new-api-ref-%d-%d-%s", user.Id, time.Now().UnixMilli(), randstr.String(4))
 	referenceId := "ref_" + common.Sha1([]byte(reference))
 
-	payLink, err := genStripeLink(referenceId, user.StripeCustomer, user.Email, req.Amount, req.SuccessURL, req.CancelURL)
+	commissionBaseQuota, err := freezeCommissionBaseQuota(chargedMoney, commissionUnitPrice(1, user.Group))
 	if err != nil {
-		logger.LogError(c.Request.Context(), fmt.Sprintf("Stripe 创建 Checkout Session 失败 user_id=%d trade_no=%s amount=%d error=%q", id, referenceId, req.Amount, err.Error()))
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "拉起支付失败"})
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Stripe 计算返佣基数失败 user_id=%d trade_no=%s error=%q", id, referenceId, err.Error()))
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})
 		return
 	}
-
 	topUp := &model.TopUp{
 		UserId:          id,
 		Amount:          req.Amount,
@@ -109,10 +111,25 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
+	if err := freezeCommissionSnapshot(topUp, user, commissionBaseQuota); err != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Stripe 冻结返佣快照失败 user_id=%d trade_no=%s error=%q", id, referenceId, err.Error()))
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})
+		return
+	}
 	err = topUp.Insert()
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Stripe 创建充值订单失败 user_id=%d trade_no=%s amount=%d error=%q", id, referenceId, req.Amount, err.Error()))
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})
+		return
+	}
+
+	payLink, err := createStripeCheckoutSession(referenceId, user.StripeCustomer, user.Email, req.Amount, req.SuccessURL, req.CancelURL)
+	if err != nil {
+		if statusErr := model.UpdatePendingTopUpStatus(referenceId, model.PaymentProviderStripe, common.TopUpStatusFailed); statusErr != nil {
+			logger.LogError(c.Request.Context(), fmt.Sprintf("Stripe 创建 Checkout Session 失败后更新订单状态失败 user_id=%d trade_no=%s error=%q", id, referenceId, statusErr.Error()))
+		}
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Stripe 创建 Checkout Session 失败 user_id=%d trade_no=%s amount=%d error=%q", id, referenceId, req.Amount, err.Error()))
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "拉起支付失败"})
 		return
 	}
 	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Stripe 充值订单创建成功 user_id=%d trade_no=%s amount=%d money=%.2f", id, referenceId, req.Amount, chargedMoney))

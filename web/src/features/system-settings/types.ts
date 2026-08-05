@@ -327,6 +327,7 @@ export type BillingSettings = {
   // section (saved via /api/option/waffo-pancake/save).
   WaffoPancakeStoreID: string
   WaffoPancakeProductID: string
+  'affiliate_setting.commission_rate': number
   'checkin_setting.enabled': boolean
   'checkin_setting.min_quota': number
   'checkin_setting.max_quota': number
@@ -362,6 +363,36 @@ export type OperationsSettings = {
   'perf_metrics_setting.flush_interval': number
   'perf_metrics_setting.bucket_time': 'hour' | 'minute' | '5min'
   'perf_metrics_setting.retention_days': number
+}
+
+export type GroupProbeMapping = {
+  group: string
+  display_name: string
+  model: string
+  public: boolean
+}
+
+export type GroupProbeSettings = {
+  enabled: boolean
+  interval_minutes: number
+  retention_days: number
+  timeout_seconds: number
+  groups: GroupProbeMapping[]
+}
+
+export type GroupProbeSettingsResponse = {
+  success: boolean
+  message?: string
+  data?: GroupProbeSettings
+}
+
+export type GroupProbeRunResponse = {
+  success: boolean
+  message?: string
+  data?: {
+    task_id: string
+    created: boolean
+  }
 }
 
 export type SecuritySettings = {

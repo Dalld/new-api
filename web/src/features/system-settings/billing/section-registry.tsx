@@ -25,6 +25,7 @@ import { PaymentSettingsSection } from '../integrations/payment-settings-section
 import { RatioSettingsCard } from '../models/ratio-settings-card'
 import type { BillingSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+import { AffiliateCommissionSettingsSection } from './affiliate-commission-settings-section'
 
 const getModelDefaults = (settings: BillingSettings) => ({
   ModelPrice: settings.ModelPrice,
@@ -185,6 +186,15 @@ const BILLING_SECTIONS = [
           confirmedAt: settings['payment_setting.compliance_confirmed_at'] ?? 0,
           confirmedBy: settings['payment_setting.compliance_confirmed_by'] ?? 0,
         }}
+      />
+    ),
+  },
+  {
+    id: 'affiliate-commission',
+    titleKey: 'Affiliate Commission',
+    build: (settings: BillingSettings) => (
+      <AffiliateCommissionSettingsSection
+        defaultValue={settings['affiliate_setting.commission_rate']}
       />
     ),
   },

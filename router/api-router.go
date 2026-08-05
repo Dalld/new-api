@@ -22,6 +22,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/setup", controller.GetSetup)
 		apiRouter.POST("/setup", anonymousRequestBodyLimit, controller.PostSetup)
 		apiRouter.GET("/status", controller.GetStatus)
+		apiRouter.GET("/status/probes", controller.GetPublicGroupProbeStatus)
 		apiRouter.GET("/uptime/status", controller.GetUptimeKumaStatus)
 		apiRouter.GET("/models", middleware.UserAuth(), controller.DashboardListModels)
 		apiRouter.GET("/status/test", middleware.AdminAuth(), controller.TestStatus)
@@ -98,6 +99,9 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/passkey/verify/finish", middleware.DisableCache(), controller.PasskeyVerifyFinish)
 				selfRoute.DELETE("/passkey", middleware.DisableCache(), controller.PasskeyDelete)
 				selfRoute.GET("/aff", controller.GetAffCode)
+				selfRoute.GET("/aff/invitees", controller.GetSelfInvitees)
+				selfRoute.GET("/aff/commissions", controller.GetSelfCommissions)
+				selfRoute.GET("/aff/recharge_total", controller.GetSelfRechargeTotal)
 				selfRoute.GET("/topup/info", controller.GetTopUpInfo)
 				selfRoute.GET("/topup/self", controller.GetUserTopUps)
 				selfRoute.POST("/topup", middleware.CriticalRateLimit(), controller.TopUp)
@@ -309,6 +313,22 @@ func SetApiRouter(router *gin.Engine) {
 		groupRoute.Use(middleware.AdminAuth())
 		{
 			groupRoute.GET("/", controller.GetGroups)
+		}
+
+		groupProbeRoute := apiRouter.Group("/group-probe")
+		groupProbeRoute.Use(middleware.AdminAuth())
+		{
+			groupProbeRoute.GET("/settings", controller.GetGroupProbeSettings)
+			groupProbeRoute.PUT("/settings", controller.UpdateGroupProbeSettings)
+			groupProbeRoute.POST("/run", middleware.CriticalRateLimit(), controller.RunGroupProbe)
+			groupProbeRoute.GET("/results", controller.GetGroupProbeResults)
+		}
+
+		affiliateRoute := apiRouter.Group("/affiliate")
+		affiliateRoute.Use(middleware.AdminAuth())
+		{
+			affiliateRoute.GET("/relations", controller.GetAffiliateRelations)
+			affiliateRoute.GET("/commissions", controller.GetCommissionRecords)
 		}
 
 		prefillGroupRoute := apiRouter.Group("/prefill_group")

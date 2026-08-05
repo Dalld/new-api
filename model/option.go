@@ -1,13 +1,17 @@
 package model
 
 import (
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/affiliate_setting"
 	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/group_probe_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -184,24 +188,36 @@ func InitOptionMap() {
 	}
 
 	common.OptionMapRWMutex.Unlock()
-	loadOptionsFromDatabase()
+	if err := loadOptionsFromDatabase(); err != nil {
+		common.SysError("failed to load options from database: " + err.Error())
+	}
 }
 
-func loadOptionsFromDatabase() {
-	options, _ := AllOption()
+func loadOptionsFromDatabase() error {
+	options, err := AllOption()
+	if err != nil {
+		return err
+	}
+	var loadErrors []error
 	for _, option := range options {
-		err := updateOptionMap(option.Key, option.Value)
-		if err != nil {
-			common.SysLog("failed to update option map: " + err.Error())
+		if err := validateOptionValue(option.Key, option.Value); err != nil {
+			loadErrors = append(loadErrors, fmt.Errorf("validate option %q: %w", option.Key, err))
+			continue
+		}
+		if err := updateOptionMap(option.Key, option.Value); err != nil {
+			loadErrors = append(loadErrors, fmt.Errorf("apply option %q: %w", option.Key, err))
 		}
 	}
+	return errors.Join(loadErrors...)
 }
 
 func SyncOptions(frequency int) {
 	for {
 		time.Sleep(time.Duration(frequency) * time.Second)
 		common.SysLog("syncing options from database")
-		loadOptionsFromDatabase()
+		if err := loadOptionsFromDatabase(); err != nil {
+			common.SysError("failed to sync options from database: " + err.Error())
+		}
 	}
 }
 
@@ -211,6 +227,17 @@ func validateOptionValue(key string, value string) error {
 	}
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
+	}
+	if key == affiliate_setting.OptionKey {
+		rate, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return err
+		}
+		return affiliate_setting.ValidateRate(rate)
+	}
+	if key == group_probe_setting.OptionKey {
+		_, err := group_probe_setting.Decode(value, nil)
+		return err
 	}
 	return nil
 }
@@ -224,12 +251,16 @@ func UpdateOption(key string, value string) error {
 		Key: key,
 	}
 	// https://gorm.io/docs/update.html#Save-All-Fields
-	DB.FirstOrCreate(&option, Option{Key: key})
+	if err := DB.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
+		return err
+	}
 	option.Value = value
 	// Save is a combination function.
 	// If save value does not contain primary key, it will execute Create,
 	// otherwise it will execute Update (with all fields).
-	DB.Save(&option)
+	if err := DB.Save(&option).Error; err != nil {
+		return err
+	}
 	// Update OptionMap
 	return updateOptionMap(key, value)
 }
@@ -284,7 +315,10 @@ func updateOptionMap(key string, value string) (err error) {
 	common.OptionMap[key] = value
 
 	// 检查是否是模型配置 - 使用更规范的方式处理
-	if handleConfigUpdate(key, value) {
+	if handled, configErr := handleConfigUpdate(key, value); handled {
+		if configErr != nil {
+			return configErr
+		}
 		return nil // 已由配置系统处理
 	}
 
@@ -604,15 +638,29 @@ func updateOptionMap(key string, value string) (err error) {
 }
 
 // handleConfigUpdate 处理分层配置更新，返回是否已处理
-func handleConfigUpdate(key, value string) bool {
+func handleConfigUpdate(key, value string) (bool, error) {
 	if key == operation_setting.ToolPriceOptionKey {
 		operation_setting.LoadToolPricesFromJSONString(value)
-		return true
+		return true, nil
+	}
+	if key == affiliate_setting.OptionKey {
+		rate, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return true, err
+		}
+		return true, affiliate_setting.SetRate(rate)
+	}
+	if key == group_probe_setting.OptionKey {
+		decoded, err := group_probe_setting.Decode(value, nil)
+		if err != nil {
+			return true, err
+		}
+		return true, group_probe_setting.SetSetting(decoded, nil)
 	}
 
 	parts := strings.SplitN(key, ".", 2)
 	if len(parts) != 2 {
-		return false // 不是分层配置
+		return false, nil // 不是分层配置
 	}
 
 	configName := parts[0]
@@ -621,14 +669,16 @@ func handleConfigUpdate(key, value string) bool {
 	// 获取配置对象
 	cfg := config.GlobalConfig.Get(configName)
 	if cfg == nil {
-		return false // 未注册的配置
+		return false, nil // 未注册的配置
 	}
 
 	// 更新配置
 	configMap := map[string]string{
 		configKey: value,
 	}
-	config.UpdateConfigFromMap(cfg, configMap)
+	if err := config.UpdateConfigFromMap(cfg, configMap); err != nil {
+		return true, err
+	}
 
 	// 特定配置的后处理
 	if configName == "performance_setting" {
@@ -638,5 +688,5 @@ func handleConfigUpdate(key, value string) bool {
 		ratio_setting.InvalidateExposedDataCache()
 	}
 
-	return true // 已处理
+	return true, nil // 已处理
 }
