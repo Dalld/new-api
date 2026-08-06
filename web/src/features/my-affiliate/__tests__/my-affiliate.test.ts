@@ -106,8 +106,7 @@ describe('my affiliate response privacy', () => {
         items: [
           {
             id: 7,
-            username: 'invitee',
-            display_name: 'Invitee',
+            masked_username: 'inv**ee',
             created_at: 1_700_000_000,
             email: 'private@example.com',
             inviter_id: 3,
@@ -123,8 +122,7 @@ describe('my affiliate response privacy', () => {
     assert.deepEqual(response.data?.items, [
       {
         id: 7,
-        username: 'invitee',
-        display_name: 'Invitee',
+        masked_username: 'inv**ee',
         created_at: 1_700_000_000,
       },
     ])
@@ -166,32 +164,99 @@ describe('my affiliate response privacy', () => {
   })
 })
 
-describe('my affiliate referral card', () => {
-  test('keeps the black and gold card with icon copy actions', () => {
+describe('my affiliate referral plan layout', () => {
+  test('uses the localized referral-plan title and a refresh action', () => {
     assert.match(
       componentSource,
-      /linear-gradient\(135deg, #1a1a1a 0%, #2d2410 40%, #1a1a1a 100%\)/
+      /SectionPageLayout\.Title[\s\S]*t\('Referral Program'\)/
     )
-    assert.equal(componentSource.match(/<CopyButton/g)?.length, 2)
-    assert.doesNotMatch(componentSource, /navigator\.clipboard|from 'sonner'/)
+    assert.match(
+      componentSource,
+      /const handleRefresh = \(\) => \{[\s\S]*invalidateQueries\(\{ queryKey: \['my-affiliate'\] \}\)/
+    )
+    assert.match(componentSource, /aria-label=\{t\('Refresh'\)\}/)
+    assert.match(componentSource, /title=\{t\('Refresh'\)\}/)
+    assert.match(componentSource, /disabled=\{isRefreshing\}/)
+    assert.match(componentSource, /<span>\{t\('Refresh'\)\}<\/span>/)
   })
 
-  test('renders all four current referral statistics', () => {
-    for (const label of [
-      `t('Invites')`,
-      `t('Pending Rebate')`,
-      `t('Total Rebate')`,
-      `t('Referred Recharge Total')`,
-    ]) {
-      assert.ok(componentSource.includes(label), `missing statistic: ${label}`)
+  test('renders four semantic referral statistics with values and descriptions', () => {
+    const statsBlock = componentSource.match(
+      /const stats = \[([\s\S]*?)\n {2}\]\n\n {2}const isRefreshing/
+    )?.[1]
+
+    assert.ok(statsBlock, 'referral statistics block is missing')
+    for (const key of ['invites', 'recharge', 'pending', 'total']) {
+      assert.match(statsBlock, new RegExp(`key: '${key}'`))
     }
+    for (const label of [
+      `t('Total Invites')`,
+      `t('Referred Recharge Total')`,
+      `t('Pending Transfer')`,
+      `t('Total Rebate')`,
+    ]) {
+      assert.ok(statsBlock.includes(label), `missing statistic: ${label}`)
+    }
+    assert.equal((statsBlock.match(/description: t\(/g) ?? []).length, 4)
+  })
+
+  test('renders the referral link, copy action, and reward information callout', () => {
+    assert.match(componentSource, /t\('Your Referral Link'\)/)
+    assert.match(componentSource, /id='affiliate-link'/)
+    assert.match(componentSource, /readOnly/)
+    assert.match(componentSource, /<CopyButton[\s\S]*value=\{inviteLink\}/)
+    assert.match(componentSource, /tooltip=\{t\('Copy referral link'\)\}/)
+    assert.match(componentSource, /aria-label=\{t\('Copy referral link'\)\}/)
+    assert.match(componentSource, /t\('Referral Reward'\)/)
+    assert.match(
+      componentSource,
+      /overview\?\.payment_compliance_confirmed/
+    )
+    assert.match(componentSource, /t\('Actual Recharge Rebate'\)/)
+    assert.match(componentSource, /t\('Signup Bonus'\)/)
+    assert.match(componentSource, /formatCommissionRate\(overview\.commission_rate\)/)
+    assert.match(componentSource, /overview\.inviter_signup_reward_quota/)
+    assert.match(componentSource, /overview\.invitee_signup_reward_quota/)
+    assert.match(componentSource, /t\("Based on invitee's actual recharge amount"\)/)
+    assert.match(componentSource, /Invitee actual recharge reward: \{\{rate\}\}/)
+    assert.match(componentSource, /t\('Inviter'\)/)
+    assert.match(componentSource, /t\('Invitee'\)/)
+    assert.match(
+      componentSource,
+      /Referral rewards are currently disabled until payment compliance is confirmed\./
+    )
+    assert.match(componentSource, /<Info[\s\S]*aria-hidden='true'/)
+  })
+
+  test('keeps the reward history section and its two controlled tabs', () => {
+    assert.match(componentSource, /t\('Reward History'\)/)
+    assert.match(
+      componentSource,
+      /t\('Your referral records and reward status'\)/
+    )
+    assert.match(
+      componentSource,
+      /<Tabs value=\{search\.tab\} onValueChange=\{changeTab\}>/
+    )
+    assert.match(
+      componentSource,
+      /<TabsTrigger\s+[\s\S]*?value='invitees'[\s\S]*?t\('Invitees'\)/
+    )
+    assert.match(
+      componentSource,
+      /<TabsTrigger\s+[\s\S]*?value='commissions'[\s\S]*?t\('Commission Records'\)/
+    )
   })
 
   test('does not present unavailable financial statistics as zero', () => {
     assert.match(componentSource, /const statsUnavailable =/)
     assert.match(
       componentSource,
-      /summary \? String\(summary\.aff_count\) : '-'/
+      /overviewQuery\.data != null && !overviewQuery\.data\.success/
+    )
+    assert.match(
+      componentSource,
+      /overview \? String\(overview\.invitee_count\) : '-'/
     )
     assert.match(
       componentSource,
@@ -221,20 +286,25 @@ describe('my affiliate referral card', () => {
     assert.match(componentSource, /<Pager/)
   })
 
-  test('uses bounded responsive tracks in the referral card', () => {
+  test('uses responsive full-width tracks in the referral card', () => {
     assert.match(
       componentSource,
-      /className='grid min-w-0 gap-3 sm:grid-cols-2'/
+      /className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'/
     )
     assert.match(
       componentSource,
-      /className='grid min-w-0 grid-cols-2 gap-2 lg:w-80/
+      /className='flex w-full flex-col gap-5'/
     )
+    assert.match(componentSource, /className='flex min-h-36 flex-col/)
+    assert.match(componentSource, /className='min-h-\[16rem\]'/)
     assert.match(componentSource, /className='h-9 min-w-0 flex-1/)
+    assert.match(componentSource, /aria-busy=\{isRefreshing\}/)
+    assert.match(componentSource, /TabsList className='grid w-full grid-cols-2 sm:w-auto'/)
   })
 
   test('owns the balance transfer workflow inside the pending rebate tile', () => {
-    assert.match(componentSource, /key === 'pending'/)
+    assert.match(componentSource, /key: 'pending'/)
+    assert.match(componentSource, /!summary \|\|\s+summary\.aff_quota <= 0/)
     assert.match(componentSource, /t\('Transfer to Balance'\)/)
     assert.match(componentSource, /<ArrowRightLeft/)
     assert.match(componentSource, /<TransferDialog/)
@@ -242,6 +312,13 @@ describe('my affiliate referral card', () => {
       componentSource,
       /availableQuota=\{summary\?\.aff_quota \?\? 0\}/
     )
+  })
+
+  test('displays only the invitee ID and masked username', () => {
+    assert.match(componentSource, /<TableHead>\{t\('User ID'\)\}<\/TableHead>/)
+    assert.match(componentSource, /item\.masked_username \|\| '-'/)
+    assert.doesNotMatch(componentSource, /item\.username/)
+    assert.doesNotMatch(componentSource, /item\.display_name/)
   })
 
   test('refreshes the authoritative summary and global user after transfer', () => {

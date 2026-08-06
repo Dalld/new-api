@@ -23,6 +23,7 @@ import type {
   AffiliateTransferPolicy,
   PageData,
   SelfAffiliateSummary,
+  SelfAffiliateOverview,
   SelfCommissionRecord,
   SelfInvitee,
 } from './types'
@@ -37,17 +38,26 @@ const selfAffiliateSummarySchema: z.ZodType<SelfAffiliateSummary> = z.object({
   aff_history_quota: nonNegativeInteger,
 })
 
+const selfAffiliateOverviewSchema: z.ZodType<SelfAffiliateOverview> = z.object({
+  invitee_count: nonNegativeInteger,
+  commission_rate: z.number().finite().min(0).max(1),
+  inviter_signup_reward_quota: nonNegativeInteger,
+  invitee_signup_reward_quota: nonNegativeInteger,
+  payment_compliance_confirmed: z.boolean(),
+})
+
 const affiliateTransferPolicySchema: z.ZodType<AffiliateTransferPolicy> =
   z.object({
     payment_compliance_confirmed: z.boolean().default(true),
   })
 
-const selfInviteeSchema: z.ZodType<SelfInvitee> = z.object({
-  id: positiveInteger,
-  username: z.string(),
-  display_name: z.string(),
-  created_at: nonNegativeInteger,
-})
+const selfInviteeSchema: z.ZodType<SelfInvitee> = z
+  .object({
+    id: positiveInteger,
+    masked_username: z.string(),
+    created_at: nonNegativeInteger,
+  })
+  .strip()
 
 const selfCommissionRecordSchema: z.ZodType<SelfCommissionRecord> = z
   .object({
@@ -98,6 +108,10 @@ export function parseAffiliateCodeResponse(input: unknown) {
 
 export function parseSelfAffiliateSummaryResponse(input: unknown) {
   return parseApiResponse(selfAffiliateSummarySchema, input)
+}
+
+export function parseSelfAffiliateOverviewResponse(input: unknown) {
+  return parseApiResponse(selfAffiliateOverviewSchema, input)
 }
 
 export function parseAffiliateTransferResponse(input: unknown) {

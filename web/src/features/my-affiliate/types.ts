@@ -51,6 +51,14 @@ export interface SelfAffiliateSummary {
   aff_history_quota: number
 }
 
+export interface SelfAffiliateOverview {
+  invitee_count: number
+  commission_rate: number
+  inviter_signup_reward_quota: number
+  invitee_signup_reward_quota: number
+  payment_compliance_confirmed: boolean
+}
+
 export interface AffiliateTransferRequest {
   quota: number
 }
@@ -63,8 +71,7 @@ export interface AffiliateTransferPolicy {
 
 export interface SelfInvitee {
   id: number
-  username: string
-  display_name: string
+  masked_username: string
   created_at: number
 }
 

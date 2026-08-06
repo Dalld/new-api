@@ -73,25 +73,53 @@ type CommissionRecordDetail struct {
 }
 
 type SelfInvitee struct {
-	ID          int    `json:"id" gorm:"column:id"`
-	InviterID   int    `json:"inviter_id" gorm:"column:inviter_id"`
-	Username    string `json:"username" gorm:"column:username"`
-	DisplayName string `json:"display_name" gorm:"column:display_name"`
-	CreatedAt   int64  `json:"created_at" gorm:"column:created_at"`
+	ID             int    `json:"id" gorm:"column:id"`
+	InviterID      int    `json:"inviter_id" gorm:"column:inviter_id"`
+	Username       string `json:"-" gorm:"column:username"`
+	MaskedUsername string `json:"masked_username" gorm:"-"`
+	DisplayName    string `json:"-" gorm:"column:display_name"`
+	CreatedAt      int64  `json:"created_at" gorm:"column:created_at"`
 }
 
 type SelfCommissionRecord struct {
-	ID                  int    `json:"id" gorm:"column:id"`
-	TopUpID             int    `json:"top_up_id" gorm:"column:top_up_id"`
-	OrderNo             string `json:"order_no" gorm:"column:order_no"`
-	PaymentProvider     string `json:"payment_provider" gorm:"column:payment_provider"`
-	InviterID           int    `json:"inviter_id" gorm:"column:inviter_id"`
-	InviteeID           int    `json:"invitee_id" gorm:"column:invitee_id"`
-	InviteeUsername     string `json:"invitee_username" gorm:"column:invitee_username"`
-	CommissionBaseQuota int64  `json:"commission_base_quota" gorm:"column:commission_base_quota"`
-	CommissionRate      string `json:"commission_rate" gorm:"column:commission_rate"`
-	CommissionQuota     int64  `json:"commission_quota" gorm:"column:commission_quota"`
-	CreatedAt           int64  `json:"created_at" gorm:"column:created_at"`
+	ID                    int    `json:"id" gorm:"column:id"`
+	TopUpID               int    `json:"top_up_id" gorm:"column:top_up_id"`
+	OrderNo               string `json:"order_no" gorm:"column:order_no"`
+	PaymentProvider       string `json:"payment_provider" gorm:"column:payment_provider"`
+	InviterID             int    `json:"inviter_id" gorm:"column:inviter_id"`
+	InviteeID             int    `json:"invitee_id" gorm:"column:invitee_id"`
+	InviteeUsername       string `json:"-" gorm:"column:invitee_username"`
+	MaskedInviteeUsername string `json:"invitee_username" gorm:"-"`
+	CommissionBaseQuota   int64  `json:"commission_base_quota" gorm:"column:commission_base_quota"`
+	CommissionRate        string `json:"commission_rate" gorm:"column:commission_rate"`
+	CommissionQuota       int64  `json:"commission_quota" gorm:"column:commission_quota"`
+	CreatedAt             int64  `json:"created_at" gorm:"column:created_at"`
+}
+
+func maskAffiliateUsername(username string) string {
+	runes := []rune(username)
+	if len(runes) == 0 {
+		return ""
+	}
+	if len(runes) <= 2 {
+		return "**"
+	}
+	if len(runes) <= 5 {
+		return string(runes[0]) + "**" + string(runes[len(runes)-1])
+	}
+	return string(runes[:3]) + "**" + string(runes[len(runes)-2:])
+}
+
+func maskSelfInvitees(invitees []SelfInvitee) {
+	for index := range invitees {
+		invitees[index].MaskedUsername = maskAffiliateUsername(invitees[index].Username)
+	}
+}
+
+func maskSelfCommissionRecords(records []SelfCommissionRecord) {
+	for index := range records {
+		records[index].MaskedInviteeUsername = maskAffiliateUsername(records[index].InviteeUsername)
+	}
 }
 
 func normalizeCommissionPage(startIdx, pageSize int) (int, int) {
@@ -200,6 +228,7 @@ func GetSelfInvitees(inviterID int, keyword string, startIdx int, pageSize int) 
 	if err == nil && invitees == nil {
 		invitees = make([]SelfInvitee, 0)
 	}
+	maskSelfInvitees(invitees)
 	return invitees, total, err
 }
 
@@ -226,7 +255,15 @@ func GetSelfCommissionRecords(inviterID int, keyword string, startIdx int, pageS
 	if err == nil && records == nil {
 		records = make([]SelfCommissionRecord, 0)
 	}
+	maskSelfCommissionRecords(records)
 	return records, total, err
+}
+
+// GetSelfInviteeCount counts the authoritative inviter relationship instead
+// of relying on the denormalized users.aff_count field.
+func GetSelfInviteeCount(inviterID int) (total int64, err error) {
+	err = DB.Model(&User{}).Where("inviter_id = ?", inviterID).Count(&total).Error
+	return total, err
 }
 
 func GetSelfRechargeTotal(inviterID int) (total int64, err error) {

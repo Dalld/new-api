@@ -25,6 +25,7 @@ import {
   parseAffiliateTransferResponse,
   parseRechargeTotalResponse,
   parseSelfAffiliateSummaryResponse,
+  parseSelfAffiliateOverviewResponse,
   parseSelfCommissionPageResponse,
   parseSelfInviteePageResponse,
 } from './schemas'
@@ -40,6 +41,13 @@ export async function getSelfAffiliateSummary() {
     skipErrorHandler: true,
   })
   return parseSelfAffiliateSummaryResponse(response.data)
+}
+
+export async function getSelfAffiliateOverview() {
+  const response = await api.get<unknown>('/api/user/aff/overview', {
+    skipErrorHandler: true,
+  })
+  return parseSelfAffiliateOverviewResponse(response.data)
 }
 
 export async function getAffiliateTransferPolicy() {

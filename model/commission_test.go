@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -94,6 +95,15 @@ func TestCommissionQueriesEnforceOwnershipAndUseRealRelationships(t *testing.T) 
 	for _, invitee := range invitees {
 		assert.Equal(t, inviterA.Id, invitee.InviterID)
 	}
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", inviterA.Id).Update("aff_count", 999).Error)
+	count, err := GetSelfInviteeCount(inviterA.Id)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), count)
+	assert.Equal(t, maskAffiliateUsername(invitees[0].Username), invitees[0].MaskedUsername)
+	inviteeJSON, err := json.Marshal(invitees[0])
+	require.NoError(t, err)
+	assert.NotContains(t, string(inviteeJSON), invitees[0].Username)
+	assert.Contains(t, string(inviteeJSON), invitees[0].MaskedUsername)
 
 	selfRecords, total, err := GetSelfCommissionRecords(inviterA.Id, "", 0, 10)
 	require.NoError(t, err)
@@ -101,6 +111,7 @@ func TestCommissionQueriesEnforceOwnershipAndUseRealRelationships(t *testing.T) 
 	require.Len(t, selfRecords, 1)
 	assert.Equal(t, inviterA.Id, selfRecords[0].InviterID)
 	assert.Equal(t, int64(100), selfRecords[0].CommissionQuota)
+	assert.Equal(t, "inv**a1", selfRecords[0].MaskedInviteeUsername)
 
 	adminRecords, total, err := GetCommissionRecords("", 1, 1)
 	require.NoError(t, err)
@@ -120,6 +131,16 @@ func TestCommissionQueriesEnforceOwnershipAndUseRealRelationships(t *testing.T) 
 	assert.Equal(t, int64(100), byInviter[inviterA.Id].CommissionQuota)
 	assert.Equal(t, int64(2000), byInviter[inviterB.Id].CommissionBaseQuota)
 	assert.Equal(t, int64(300), byInviter[commissionOnlyInviter.Id].CommissionQuota)
+}
+
+func TestMaskAffiliateUsername(t *testing.T) {
+	assert.Equal(t, "", maskAffiliateUsername(""))
+	assert.Equal(t, "**", maskAffiliateUsername("a"))
+	assert.Equal(t, "**", maskAffiliateUsername("ab"))
+	assert.Equal(t, "a**c", maskAffiliateUsername("abc"))
+	assert.Equal(t, "a**e", maskAffiliateUsername("abcde"))
+	assert.Equal(t, "abc**ef", maskAffiliateUsername("abcdef"))
+	assert.Equal(t, "用**甲", maskAffiliateUsername("用户甲"))
 }
 
 func TestCommissionSearchTreatsInputAsData(t *testing.T) {

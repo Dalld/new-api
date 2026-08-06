@@ -99,6 +99,7 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/passkey/verify/finish", middleware.DisableCache(), controller.PasskeyVerifyFinish)
 				selfRoute.DELETE("/passkey", middleware.DisableCache(), controller.PasskeyDelete)
 				selfRoute.GET("/aff", controller.GetAffCode)
+				selfRoute.GET("/aff/overview", controller.GetSelfAffiliateOverview)
 				selfRoute.GET("/aff/invitees", controller.GetSelfInvitees)
 				selfRoute.GET("/aff/commissions", controller.GetSelfCommissions)
 				selfRoute.GET("/aff/recharge_total", controller.GetSelfRechargeTotal)

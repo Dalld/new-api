@@ -58,10 +58,24 @@ func TestGroupProbeRoutesAreRegistered(t *testing.T) {
 		http.MethodPost + " /api/group-probe/run",
 		http.MethodGet + " /api/group-probe/results",
 		http.MethodPost + " /api/affiliate/bind",
+		http.MethodGet + " /api/user/aff/overview",
 	} {
 		_, exists := routes[route]
 		assert.True(t, exists, "missing route %s", route)
 	}
+}
+
+func TestAffiliateOverviewRouteRejectsAnonymousRequests(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	SetApiRouter(engine)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/user/aff/overview", nil)
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+
+	assert.Equal(t, http.StatusUnauthorized, response.Code)
+	assert.NotContains(t, response.Body.String(), `"success":true`)
 }
 
 func TestAffiliateBindRouteRejectsAnonymousRequests(t *testing.T) {

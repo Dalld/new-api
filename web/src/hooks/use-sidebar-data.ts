@@ -114,7 +114,7 @@ export function buildSidebarData(t: (key: string) => string): SidebarData {
             icon: Wallet,
           },
           {
-            title: t('My Referrals'),
+            title: t('Referral Program'),
             url: '/my-affiliate',
             icon: Share2,
           },

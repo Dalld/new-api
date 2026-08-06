@@ -9,6 +9,8 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/affiliate_setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -26,6 +28,14 @@ type affiliatePage[T any] struct {
 	PageSize int `json:"page_size"`
 	Total    int `json:"total"`
 	Items    []T `json:"items"`
+}
+
+type selfAffiliateOverviewResponse struct {
+	InviteeCount             int64   `json:"invitee_count"`
+	CommissionRate           float64 `json:"commission_rate"`
+	InviterSignupRewardQuota int     `json:"inviter_signup_reward_quota"`
+	InviteeSignupRewardQuota int     `json:"invitee_signup_reward_quota"`
+	PaymentCompliance        bool    `json:"payment_compliance_confirmed"`
 }
 
 func setupAffiliateControllerTestDB(t *testing.T) {
@@ -107,6 +117,20 @@ func decodeAffiliateResponse[T any](t *testing.T, recorder *httptest.ResponseRec
 
 func TestAffiliateSelfEndpointsEnforceAuthenticatedOwnership(t *testing.T) {
 	setupAffiliateControllerTestDB(t)
+	previousPaymentSetting := *operation_setting.GetPaymentSetting()
+	previousInviterQuota := common.QuotaForInviter
+	previousInviteeQuota := common.QuotaForInvitee
+	previousCommissionRate := affiliate_setting.GetRate()
+	t.Cleanup(func() {
+		*operation_setting.GetPaymentSetting() = previousPaymentSetting
+		common.QuotaForInviter = previousInviterQuota
+		common.QuotaForInvitee = previousInviteeQuota
+		require.NoError(t, affiliate_setting.SetRate(previousCommissionRate))
+	})
+	operation_setting.GetPaymentSetting().ComplianceConfirmed = false
+	operation_setting.GetPaymentSetting().ComplianceTermsVersion = ""
+	common.QuotaForInviter = 100
+	common.QuotaForInvitee = 50
 	inviterA := createAffiliateControllerUser(t, "owner-a", 0, 100)
 	inviterB := createAffiliateControllerUser(t, "owner-b", 0, 200)
 	inviteeA := createAffiliateControllerUser(t, "invitee-a", inviterA.Id, 300)
@@ -153,6 +177,27 @@ func TestAffiliateSelfEndpointsEnforceAuthenticatedOwnership(t *testing.T) {
 		),
 	)
 	assert.Equal(t, int64(1000), rechargeResponse.Data)
+
+	overviewResponse := decodeAffiliateResponse[selfAffiliateOverviewResponse](
+		t,
+		runAffiliateController(t, GetSelfAffiliateOverview, "/api/user/aff/overview", inviterA.Id),
+	)
+	assert.Equal(t, int64(1), overviewResponse.Data.InviteeCount)
+	assert.False(t, overviewResponse.Data.PaymentCompliance)
+	assert.Zero(t, overviewResponse.Data.InviterSignupRewardQuota)
+	assert.Zero(t, overviewResponse.Data.InviteeSignupRewardQuota)
+
+	operation_setting.GetPaymentSetting().ComplianceConfirmed = true
+	operation_setting.GetPaymentSetting().ComplianceTermsVersion = operation_setting.CurrentComplianceTermsVersion
+	require.NoError(t, affiliate_setting.SetRate(0.15))
+	overviewResponse = decodeAffiliateResponse[selfAffiliateOverviewResponse](
+		t,
+		runAffiliateController(t, GetSelfAffiliateOverview, "/api/user/aff/overview", inviterA.Id),
+	)
+	assert.True(t, overviewResponse.Data.PaymentCompliance)
+	assert.Equal(t, 0.15, overviewResponse.Data.CommissionRate)
+	assert.Equal(t, 100, overviewResponse.Data.InviterSignupRewardQuota)
+	assert.Equal(t, 50, overviewResponse.Data.InviteeSignupRewardQuota)
 }
 
 func TestAffiliateSelfListsApplyKeywordAndPageInfo(t *testing.T) {

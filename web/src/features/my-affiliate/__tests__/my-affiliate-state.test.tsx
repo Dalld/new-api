@@ -99,6 +99,16 @@ function createAffiliateQueryClient() {
       aff_history_quota: 0,
     },
   })
+  queryClient.setQueryData(['my-affiliate', 'overview'], {
+    success: true,
+    data: {
+      invitee_count: 0,
+      commission_rate: 0.1,
+      inviter_signup_reward_quota: 0,
+      invitee_signup_reward_quota: 0,
+      payment_compliance_confirmed: true,
+    },
+  })
   queryClient.setQueryData(['my-affiliate', 'transfer-policy'], {
     success: true,
     data: { payment_compliance_confirmed: true },
