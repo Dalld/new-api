@@ -47,6 +47,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { UserSubscriptionsDialog } from '@/features/subscriptions/components/dialogs/user-subscriptions-dialog'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { manageUser, resetUserPasskey, resetUserTwoFA } from '../api'
 import {
@@ -56,8 +57,10 @@ import {
   isUserDeleted,
 } from '../constants'
 import { getUserActionMessage } from '../lib'
+import { shouldShowBindInviterAction } from '../lib/user-inviter-binding'
 import type { User, ManageUserAction } from '../types'
 import { UserBindingDialog } from './dialogs/user-binding-dialog'
+import { UserInviterBindingDialog } from './dialogs/user-inviter-binding-dialog'
 import { useUsers } from './users-provider'
 
 interface DataTableRowActionsProps {
@@ -68,9 +71,11 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const { t } = useTranslation()
   const user = row.original
   const { setOpen, setCurrentRow, triggerRefresh } = useUsers()
+  const operatorRole = useAuthStore((state) => state.auth.user?.role)
   const [resetPasskeyOpen, setResetPasskeyOpen] = useState(false)
   const [resetTwoFAOpen, setResetTwoFAOpen] = useState(false)
   const [bindingDialogOpen, setBindingDialogOpen] = useState(false)
+  const [bindInviterDialogOpen, setBindInviterDialogOpen] = useState(false)
   const [subscriptionsDialogOpen, setSubscriptionsDialogOpen] = useState(false)
 
   const handleEdit = () => {
@@ -134,6 +139,7 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const isDisabled = user.status === USER_STATUS.DISABLED
   const isAdmin = user.role >= USER_ROLE.ADMIN
   const isRoot = user.role === USER_ROLE.ROOT
+  const canBindInviter = shouldShowBindInviterAction(operatorRole, user)
 
   if (isUserDeleted(user)) {
     return null
@@ -209,6 +215,20 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
             <Link2 size={16} />
           </DropdownMenuShortcut>
         </DropdownMenuItem>
+
+        {canBindInviter && (
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.preventDefault()
+              setBindInviterDialogOpen(true)
+            }}
+          >
+            {t('Bind inviter')}
+            <DropdownMenuShortcut>
+              <Link2 size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
+        )}
 
         <DropdownMenuItem
           onSelect={(event) => {
@@ -293,6 +313,13 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         onOpenChange={setBindingDialogOpen}
         userId={user.id}
         onUnbindSuccess={triggerRefresh}
+      />
+
+      <UserInviterBindingDialog
+        open={bindInviterDialogOpen}
+        onOpenChange={setBindInviterDialogOpen}
+        user={user}
+        onSuccess={triggerRefresh}
       />
 
       <UserSubscriptionsDialog

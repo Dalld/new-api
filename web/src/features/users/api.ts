@@ -81,6 +81,22 @@ export async function searchUsers(
   return res.data
 }
 
+export interface BindUserInviterResponse {
+  invitee_id: number
+  inviter_id: number
+}
+
+export async function bindUserInviter(
+  inviteeId: number,
+  inviterId: number
+): Promise<ApiResponse<BindUserInviterResponse>> {
+  const res = await api.post('/api/affiliate/bind', {
+    invitee_id: inviteeId,
+    inviter_id: inviterId,
+  })
+  return res.data
+}
+
 /**
  * Get single user by ID
  */

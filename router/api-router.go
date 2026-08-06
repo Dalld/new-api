@@ -330,6 +330,11 @@ func SetApiRouter(router *gin.Engine) {
 			affiliateRoute.GET("/relations", controller.GetAffiliateRelations)
 			affiliateRoute.GET("/commissions", controller.GetCommissionRecords)
 		}
+		affiliateRootRoute := apiRouter.Group("/affiliate")
+		affiliateRootRoute.Use(middleware.RootAuth())
+		{
+			affiliateRootRoute.POST("/bind", controller.BindAffiliateInviter)
+		}
 
 		prefillGroupRoute := apiRouter.Group("/prefill_group")
 		prefillGroupRoute.Use(middleware.AdminAuth())
