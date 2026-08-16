@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import {
+  type CSSProperties,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -207,12 +208,14 @@ export function StatusTimeline({
         onScroll={(event) => handleScroll(event.currentTarget)}
       >
         <div
-          className='grid h-10 w-full gap-1'
+          className='grid h-10 w-full min-w-[var(--timeline-min-width)] gap-1 sm:min-w-0 sm:gap-0.5'
           data-testid='status-timeline-grid'
-          style={{
-            gridTemplateColumns: `repeat(${points.length}, minmax(${POINT_MIN_WIDTH_PX}px, 1fr))`,
-            minWidth: `${getTimelineMinWidth(points.length)}px`,
-          }}
+          style={
+            {
+              '--timeline-min-width': `${getTimelineMinWidth(points.length)}px`,
+              gridTemplateColumns: `repeat(${points.length}, minmax(0, 1fr))`,
+            } as CSSProperties
+          }
           aria-label={t('Recent probe history for {{target}}', {
             target: targetName,
           })}
@@ -290,7 +293,7 @@ export function StatusTimeline({
                         <span
                           aria-hidden='true'
                           className={cn(
-                            'block h-10 w-2 rounded-[2px]',
+                            'block h-10 w-full max-w-2 rounded-[2px]',
                             pointStyles[point.state] ?? pointStyles.unknown
                           )}
                         />

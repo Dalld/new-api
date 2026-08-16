@@ -288,6 +288,23 @@ describe('public probe status page', () => {
         (button) => (button.getAttribute('aria-label') ?? '').length > 10
       )
     )
+
+    const timelineGrid = card.querySelector<HTMLElement>(
+      '[data-testid="status-timeline-grid"]'
+    )
+    assert.ok(timelineGrid)
+    assert.match(timelineGrid.className, /sm:min-w-0/)
+    assert.match(timelineGrid.className, /sm:gap-0\.5/)
+    assert.equal(
+      timelineGrid.style.getPropertyValue('--timeline-min-width'),
+      '1676px'
+    )
+    assert.equal(
+      timelineGrid.style.gridTemplateColumns,
+      'repeat(60, minmax(0, 1fr))'
+    )
+    assert.match(buttons[0]?.firstElementChild?.className ?? '', /w-full/)
+    assert.match(buttons[0]?.firstElementChild?.className ?? '', /max-w-2/)
     await rendered.cleanup()
   })
 
