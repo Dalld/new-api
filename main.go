@@ -29,7 +29,9 @@ import (
 	"github.com/QuantumNous/new-api/router"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	publicstatusprobe "github.com/QuantumNous/new-api/service/public_status_probe"
 	_ "github.com/QuantumNous/new-api/setting/performance_setting"
+	publicstatusprobesetting "github.com/QuantumNous/new-api/setting/public_status_probe_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
@@ -68,12 +70,45 @@ func main() {
 
 	kitutil.Debug.Store(common.DebugEnabled)
 
+	publicStatusProbeStopped := true
 	defer func() {
+		if !publicStatusProbeStopped {
+			common.SysLog("skipping explicit database close while public status probe shutdown is incomplete")
+			return
+		}
 		err := model.CloseDB()
 		if err != nil {
 			common.FatalLog("failed to close database: " + err.Error())
 		}
 	}()
+
+	probeContext, cancelPublicStatusProbe := context.WithCancel(context.Background())
+	probeSetting, probeSettingErr := publicstatusprobesetting.Load()
+	if probeSettingErr != nil {
+		common.SysLog("public status probe scheduler disabled: invalid configuration")
+		probeSetting = publicstatusprobesetting.Setting{}
+	} else if probeSetting.Enabled && len(probeSetting.Targets) > 0 {
+		common.SysLog(fmt.Sprintf("public status probe scheduler enabled for %d targets", len(probeSetting.Targets)))
+	}
+	publicStatusProbeDone := publicstatusprobe.Start(probeContext, probeSetting)
+	publicStatusProbeStopped = false
+	publicStatusProbeWaited := false
+	waitForPublicStatusProbe := func() {
+		if publicStatusProbeWaited {
+			return
+		}
+		publicStatusProbeWaited = true
+		cancelPublicStatusProbe()
+		timer := time.NewTimer(15 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-publicStatusProbeDone:
+			publicStatusProbeStopped = true
+		case <-timer.C:
+			common.SysLog("public status probe scheduler shutdown timed out")
+		}
+	}
+	defer waitForPublicStatusProbe()
 
 	if common.RedisEnabled {
 		// for compatibility with old versions
@@ -223,6 +258,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 	common.SysLog(fmt.Sprintf("received signal: %v, shutting down...", sig))
+	cancelPublicStatusProbe()
 
 	// SSE streams may run for minutes; give them time to finish before forced exit
 	shutdownTimeout := time.Duration(common.GetEnvOrDefault("SHUTDOWN_TIMEOUT_SECONDS", 120)) * time.Second
@@ -231,6 +267,7 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		common.SysError(fmt.Sprintf("server forced to shutdown: %v", err))
 	}
+	waitForPublicStatusProbe()
 	// 内存中的看板数据保存入库，避免重启丢失未落库数据 (issue #5679)
 	if common.DataExportEnabled {
 		model.SaveQuotaDataCache()

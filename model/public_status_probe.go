@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -91,6 +92,73 @@ func CreatePublicStatusProbeResult(result *PublicStatusProbeResult) (bool, error
 		return false, created.Error
 	}
 	return created.RowsAffected == 1, nil
+}
+
+func CreatePublicStatusProbeResultIfLeaseOwner(ctx context.Context, result *PublicStatusProbeResult, ownerID string, now int64) (bool, error) {
+	if result == nil {
+		return false, errors.New("public status probe result is nil")
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	if err := validatePublicStatusProbeIdentity("owner_id", ownerID, MaxPublicStatusProbeOwnerIDLength); err != nil {
+		return false, err
+	}
+	if now <= 0 {
+		return false, errors.New("lease current time must be positive")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	inserted := false
+	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var lease PublicStatusProbeLease
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("target_key").
+			Where("target_key = ? AND owner_id = ? AND lease_until > ?", result.TargetKey, ownerID, now).
+			Take(&lease).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		created := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "target_key"},
+				{Name: "slot_started_at"},
+			},
+			DoNothing: true,
+		}).Create(result)
+		if created.Error != nil {
+			return created.Error
+		}
+		inserted = created.RowsAffected == 1
+		return nil
+	})
+	return inserted, err
+}
+
+func PublicStatusProbeResultExists(targetKey string, slotStartedAt int64) (bool, error) {
+	targetKey = strings.TrimSpace(targetKey)
+	if err := validatePublicStatusProbeIdentity("target_key", targetKey, MaxPublicStatusProbeTargetKeyLength); err != nil {
+		return false, err
+	}
+	if slotStartedAt <= 0 || slotStartedAt%60 != 0 {
+		return false, errors.New("slot_started_at must be a positive UTC minute boundary")
+	}
+
+	var result PublicStatusProbeResult
+	err := DB.Select("id").
+		Where("target_key = ? AND slot_started_at = ?", targetKey, slotStartedAt).
+		Take(&result).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func GetLatestPublicStatusProbeResults(targetKey string, limit int) ([]PublicStatusProbeResult, error) {
@@ -210,6 +278,45 @@ func ReleasePublicStatusProbeLease(targetKey, ownerID string) (bool, error) {
 			"owner_id":    "",
 			"lease_until": int64(0),
 			"updated_at":  common.GetTimestamp(),
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func CompletePublicStatusProbeLease(targetKey, ownerID string, now, holdUntil int64) (bool, error) {
+	return CompletePublicStatusProbeLeaseWithContext(context.Background(), targetKey, ownerID, now, holdUntil)
+}
+
+func CompletePublicStatusProbeLeaseWithContext(ctx context.Context, targetKey, ownerID string, now, holdUntil int64) (bool, error) {
+	targetKey = strings.TrimSpace(targetKey)
+	ownerID = strings.TrimSpace(ownerID)
+	if err := validatePublicStatusProbeIdentity("target_key", targetKey, MaxPublicStatusProbeTargetKeyLength); err != nil {
+		return false, err
+	}
+	if err := validatePublicStatusProbeIdentity("owner_id", ownerID, MaxPublicStatusProbeOwnerIDLength); err != nil {
+		return false, err
+	}
+	if now <= 0 {
+		return false, errors.New("lease current time must be positive")
+	}
+	if holdUntil < now {
+		return false, errors.New("hold_until must not be before current time")
+	}
+	if holdUntil <= 0 || holdUntil%60 != 0 {
+		return false, errors.New("hold_until must be a positive UTC minute boundary")
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	result := DB.WithContext(ctx).Model(&PublicStatusProbeLease{}).
+		Where("target_key = ? AND owner_id = ? AND lease_until > ?", targetKey, ownerID, now).
+		Updates(map[string]any{
+			"owner_id":    "",
+			"lease_until": holdUntil,
+			"updated_at":  now,
 		})
 	if result.Error != nil {
 		return false, result.Error

@@ -33,13 +33,23 @@ const (
 	invalidConfigurationErrorText = "invalid public status probe configuration"
 )
 
+type Protocol string
+
+const (
+	ProtocolOpenAIChat            Protocol = "openai_chat"
+	ProtocolOpenAIResponses       Protocol = "openai_responses"
+	ProtocolAnthropicMessages     Protocol = "anthropic_messages"
+	ProtocolGeminiGenerateContent Protocol = "gemini_generate_content"
+)
+
 type Target struct {
-	Key         string `json:"key"`
-	Group       string `json:"group"`
-	DisplayName string `json:"display_name"`
-	Model       string `json:"model"`
-	ChannelID   int    `json:"channel_id"`
-	KeyIndex    int    `json:"key_index"`
+	Key         string   `json:"key"`
+	Group       string   `json:"group"`
+	DisplayName string   `json:"display_name"`
+	Model       string   `json:"model"`
+	Protocol    Protocol `json:"protocol"`
+	ChannelID   int      `json:"channel_id"`
+	KeyIndex    int      `json:"key_index"`
 }
 
 type Setting struct {
@@ -54,12 +64,13 @@ type Setting struct {
 }
 
 type rawTarget struct {
-	Key         string `json:"key"`
-	Group       string `json:"group"`
-	DisplayName string `json:"display_name"`
-	Model       string `json:"model"`
-	ChannelID   int    `json:"channel_id"`
-	KeyIndex    *int   `json:"key_index"`
+	Key         string   `json:"key"`
+	Group       string   `json:"group"`
+	DisplayName string   `json:"display_name"`
+	Model       string   `json:"model"`
+	Protocol    Protocol `json:"protocol"`
+	ChannelID   int      `json:"channel_id"`
+	KeyIndex    *int     `json:"key_index"`
 }
 
 func Load() (Setting, error) {
@@ -150,7 +161,7 @@ func targetSetting(lookup func(string) (string, bool)) ([]Target, error) {
 	for _, fields := range rawTargets {
 		for field := range fields {
 			switch field {
-			case "key", "group", "display_name", "model", "channel_id", "key_index":
+			case "key", "group", "display_name", "model", "protocol", "channel_id", "key_index":
 			default:
 				return nil, errors.New(invalidConfigurationErrorText)
 			}
@@ -174,10 +185,12 @@ func targetSetting(lookup func(string) (string, bool)) ([]Target, error) {
 		group := strings.TrimSpace(rawTarget.Group)
 		displayName := strings.TrimSpace(rawTarget.DisplayName)
 		model := strings.TrimSpace(rawTarget.Model)
+		protocol := Protocol(strings.TrimSpace(string(rawTarget.Protocol)))
 		if !validTargetString(key, maxKeyRunes) ||
 			!validTargetString(group, maxGroupRunes) ||
 			!validTargetString(displayName, maxDisplayNameRunes) ||
 			!validTargetString(model, maxModelRunes) ||
+			!validProtocol(protocol) ||
 			rawTarget.ChannelID <= 0 {
 			return nil, errors.New(invalidConfigurationErrorText)
 		}
@@ -199,6 +212,7 @@ func targetSetting(lookup func(string) (string, bool)) ([]Target, error) {
 			Group:       group,
 			DisplayName: displayName,
 			Model:       model,
+			Protocol:    protocol,
 			ChannelID:   rawTarget.ChannelID,
 			KeyIndex:    keyIndex,
 		})
@@ -208,4 +222,16 @@ func targetSetting(lookup func(string) (string, bool)) ([]Target, error) {
 
 func validTargetString(value string, maximumRunes int) bool {
 	return value != "" && utf8.ValidString(value) && utf8.RuneCountInString(value) <= maximumRunes
+}
+
+func validProtocol(value Protocol) bool {
+	if !utf8.ValidString(string(value)) {
+		return false
+	}
+	switch value {
+	case ProtocolOpenAIChat, ProtocolOpenAIResponses, ProtocolAnthropicMessages, ProtocolGeminiGenerateContent:
+		return true
+	default:
+		return false
+	}
 }

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const validTargetJSON = `[{"key":"target-a","group":"default","display_name":"Target A","model":"gpt-test","channel_id":1}]`
+const validTargetJSON = `[{"key":"target-a","group":"default","display_name":"Target A","model":"gpt-test","protocol":"openai_chat","channel_id":1}]`
 
 func loadWithEnvironment(values map[string]string) (Setting, error) {
 	return load(func(name string) (string, bool) {
@@ -119,6 +119,7 @@ func TestLoadAcceptsTargetCountLimit(t *testing.T) {
 					Group:       "default",
 					DisplayName: "Target " + strconv.Itoa(i),
 					Model:       "gpt-test",
+					Protocol:    "openai_chat",
 					ChannelID:   i + 1,
 				})
 			}
@@ -145,6 +146,7 @@ func TestLoadValidatesRequiredTargetFields(t *testing.T) {
 		{name: "group", field: "group"},
 		{name: "display name", field: "display_name"},
 		{name: "model", field: "model"},
+		{name: "protocol", field: "protocol"},
 		{name: "channel id", field: "channel_id"},
 	}
 
@@ -155,6 +157,7 @@ func TestLoadValidatesRequiredTargetFields(t *testing.T) {
 				"group":        "default",
 				"display_name": "Target A",
 				"model":        "gpt-test",
+				"protocol":     "openai_chat",
 				"channel_id":   1,
 			}
 			delete(target, tt.field)
@@ -167,11 +170,78 @@ func TestLoadValidatesRequiredTargetFields(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsAndNormalizesSupportedProtocols(t *testing.T) {
+	protocols := []Protocol{
+		ProtocolOpenAIChat,
+		ProtocolOpenAIResponses,
+		ProtocolAnthropicMessages,
+		ProtocolGeminiGenerateContent,
+	}
+
+	for _, protocol := range protocols {
+		t.Run(string(protocol), func(t *testing.T) {
+			target := map[string]any{
+				"key":          "target-a",
+				"group":        "default",
+				"display_name": "Target A",
+				"model":        "gpt-test",
+				"protocol":     " \t" + string(protocol) + "\r\n ",
+				"channel_id":   1,
+			}
+			encoded, err := common.Marshal([]map[string]any{target})
+			require.NoError(t, err)
+
+			setting, err := loadWithEnvironment(map[string]string{envTargets: string(encoded)})
+			require.NoError(t, err)
+			require.Len(t, setting.Targets, 1)
+			assert.Equal(t, protocol, setting.Targets[0].Protocol)
+		})
+	}
+}
+
+func TestLoadRejectsInvalidProtocolsWithoutEchoingValues(t *testing.T) {
+	const marker = "secret-unknown-protocol-marker"
+	tests := []struct {
+		name    string
+		targets string
+	}{
+		{
+			name:    "missing",
+			targets: `[{"key":"a","group":"a","display_name":"A","model":"m","channel_id":1}]`,
+		},
+		{
+			name:    "unknown",
+			targets: `[{"key":"a","group":"a","display_name":"A","model":"m","protocol":"secret-unknown-protocol-marker","channel_id":1}]`,
+		},
+		{
+			name:    "wrong case",
+			targets: `[{"key":"a","group":"a","display_name":"A","model":"m","protocol":"OpenAI_Chat","channel_id":1}]`,
+		},
+		{
+			name:    "trimmed empty",
+			targets: `[{"key":"a","group":"a","display_name":"A","model":"m","protocol":" \t\r\n ","channel_id":1}]`,
+		},
+		{
+			name:    "invalid utf8",
+			targets: "[{\"key\":\"a\",\"group\":\"a\",\"display_name\":\"A\",\"model\":\"m\",\"protocol\":\"openai_\xffchat\",\"channel_id\":1}]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := loadWithEnvironment(map[string]string{envTargets: tt.targets})
+			require.Error(t, err)
+			assert.Equal(t, invalidConfigurationErrorText, err.Error())
+			assert.NotContains(t, err.Error(), marker)
+		})
+	}
+}
+
 func TestLoadNormalizesTargetsAndKeyIndex(t *testing.T) {
 	setting, err := loadWithEnvironment(map[string]string{envTargets: `[
-		{"key":"  target-a  ","group":"  group-a  ","display_name":"  Target A  ","model":"  gpt-test  ","channel_id":1},
-		{"key":"target-b","group":"group-b","display_name":"Target B","model":"gpt-test","channel_id":2,"key_index":0},
-		{"key":"target-c","group":"group-c","display_name":"Target C","model":"gpt-test","channel_id":3,"key_index":2}
+		{"key":"  target-a  ","group":"  group-a  ","display_name":"  Target A  ","model":"  gpt-test  ","protocol":"  openai_chat  ","channel_id":1},
+		{"key":"target-b","group":"group-b","display_name":"Target B","model":"gpt-test","protocol":"openai_responses","channel_id":2,"key_index":0},
+		{"key":"target-c","group":"group-c","display_name":"Target C","model":"gpt-test","protocol":"anthropic_messages","channel_id":3,"key_index":2}
 	]`})
 	require.NoError(t, err)
 	require.Len(t, setting.Targets, 3)
@@ -180,6 +250,7 @@ func TestLoadNormalizesTargetsAndKeyIndex(t *testing.T) {
 		Group:       "group-a",
 		DisplayName: "Target A",
 		Model:       "gpt-test",
+		Protocol:    "openai_chat",
 		ChannelID:   1,
 		KeyIndex:    0,
 	}, setting.Targets[0])
@@ -193,12 +264,12 @@ func TestLoadRejectsInvalidTargetSelectors(t *testing.T) {
 		targets string
 	}{
 		{name: "duplicate stable key", targets: `[
-			{"key":"same","group":"a","display_name":"A","model":"m","channel_id":1},
-			{"key":" same ","group":"b","display_name":"B","model":"m","channel_id":2}
+			{"key":"same","group":"a","display_name":"A","model":"m","protocol":"openai_chat","channel_id":1},
+			{"key":" same ","group":"b","display_name":"B","model":"m","protocol":"openai_chat","channel_id":2}
 		]`},
-		{name: "zero channel id", targets: `[{"key":"a","group":"a","display_name":"A","model":"m","channel_id":0}]`},
-		{name: "negative channel id", targets: `[{"key":"a","group":"a","display_name":"A","model":"m","channel_id":-1}]`},
-		{name: "negative key index", targets: `[{"key":"a","group":"a","display_name":"A","model":"m","channel_id":1,"key_index":-1}]`},
+		{name: "zero channel id", targets: `[{"key":"a","group":"a","display_name":"A","model":"m","protocol":"openai_chat","channel_id":0}]`},
+		{name: "negative channel id", targets: `[{"key":"a","group":"a","display_name":"A","model":"m","protocol":"openai_chat","channel_id":-1}]`},
+		{name: "negative key index", targets: `[{"key":"a","group":"a","display_name":"A","model":"m","protocol":"openai_chat","channel_id":1,"key_index":-1}]`},
 	}
 
 	for _, tt := range tests {
@@ -217,11 +288,11 @@ func TestLoadRejectsUnknownTargetFieldsWithoutEchoingValues(t *testing.T) {
 	}{
 		{
 			name:    "unknown field",
-			targets: `[{"key":"a","group":"a","display_name":"A","model":"m","channel_id":1,"unexpected":"unknown-field-secret-marker"}]`,
+			targets: `[{"key":"a","group":"a","display_name":"A","model":"m","protocol":"openai_chat","channel_id":1,"unexpected":"unknown-field-secret-marker"}]`,
 		},
 		{
 			name:    "misspelled key index",
-			targets: `[{"key":"a","group":"a","display_name":"A","model":"m","channel_id":1,"key_indxe":"unknown-field-secret-marker"}]`,
+			targets: `[{"key":"a","group":"a","display_name":"A","model":"m","protocol":"openai_chat","channel_id":1,"key_indxe":"unknown-field-secret-marker"}]`,
 		},
 	}
 
@@ -254,6 +325,7 @@ func TestLoadRejectsOversizedTargetStrings(t *testing.T) {
 				"group":        "default",
 				"display_name": "Target A",
 				"model":        "gpt-test",
+				"protocol":     "openai_chat",
 				"channel_id":   1,
 			}
 			target[tt.field] = tt.value
@@ -272,6 +344,7 @@ func TestLoadAcceptsTargetStringsAtRuneLimits(t *testing.T) {
 		"group":        strings.Repeat("g", maxGroupRunes),
 		"display_name": strings.Repeat("d", maxDisplayNameRunes),
 		"model":        strings.Repeat("m", maxModelRunes),
+		"protocol":     "openai_chat",
 		"channel_id":   1,
 	}
 	encoded, err := common.Marshal([]map[string]any{target})
@@ -284,7 +357,7 @@ func TestLoadAcceptsTargetStringsAtRuneLimits(t *testing.T) {
 
 func TestLoadRejectsInvalidUTF8(t *testing.T) {
 	values := map[string]string{
-		envTargets: "[{\"key\":\"target-a\",\"group\":\"default\",\"display_name\":\"\xff\",\"model\":\"gpt-test\",\"channel_id\":1}]",
+		envTargets: "[{\"key\":\"target-a\",\"group\":\"default\",\"display_name\":\"\xff\",\"model\":\"gpt-test\",\"protocol\":\"openai_chat\",\"channel_id\":1}]",
 	}
 
 	_, err := loadWithEnvironment(values)
@@ -336,8 +409,8 @@ func TestLoadReturnsFreshTargetSlices(t *testing.T) {
 func TestLoadErrorsNeverEchoConfiguration(t *testing.T) {
 	const marker = "secret-marker"
 	_, err := loadWithEnvironment(map[string]string{envTargets: `[
-		{"key":"secret-marker","group":"a","display_name":"A","model":"m","channel_id":1},
-		{"key":"secret-marker","group":"b","display_name":"B","model":"m","channel_id":2}
+		{"key":"secret-marker","group":"a","display_name":"A","model":"m","protocol":"openai_chat","channel_id":1},
+		{"key":"secret-marker","group":"b","display_name":"B","model":"m","protocol":"openai_chat","channel_id":2}
 	]`})
 	require.Error(t, err)
 	assert.Equal(t, "invalid public status probe configuration", err.Error())

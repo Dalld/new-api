@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -127,6 +128,82 @@ func TestPublicStatusProbeConcurrentResultCreateHasSingleWinner(t *testing.T) {
 	var count int64
 	require.NoError(t, DB.Model(&PublicStatusProbeResult{}).Where("target_key = ?", "target-race").Count(&count).Error)
 	assert.EqualValues(t, 1, count)
+}
+
+func TestPublicStatusProbeConditionalCreateRequiresActiveLeaseOwner(t *testing.T) {
+	setupPublicStatusProbeTestDB(t)
+	const (
+		targetKey = "target-conditional"
+		ownerID   = "owner-a"
+		otherID   = "owner-b"
+		now       = publicStatusProbeTestBaseSlot + 10
+		leaseEnd  = publicStatusProbeTestBaseSlot + 60
+	)
+	acquired, err := AcquirePublicStatusProbeLease(targetKey, ownerID, now, leaseEnd)
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	wrongOwner := newPublicStatusProbeResult(targetKey, publicStatusProbeTestBaseSlot, now+1)
+	inserted, err := CreatePublicStatusProbeResultIfLeaseOwner(context.Background(), wrongOwner, otherID, now+1)
+	require.NoError(t, err)
+	assert.False(t, inserted)
+
+	expired := newPublicStatusProbeResult(targetKey, publicStatusProbeTestBaseSlot, leaseEnd+1)
+	inserted, err = CreatePublicStatusProbeResultIfLeaseOwner(context.Background(), expired, ownerID, leaseEnd)
+	require.NoError(t, err)
+	assert.False(t, inserted)
+
+	owned := newPublicStatusProbeResult(targetKey, publicStatusProbeTestBaseSlot, now+2)
+	inserted, err = CreatePublicStatusProbeResultIfLeaseOwner(context.Background(), owned, ownerID, now+2)
+	require.NoError(t, err)
+	assert.True(t, inserted)
+
+	duplicate := newPublicStatusProbeResult(targetKey, publicStatusProbeTestBaseSlot, now+3)
+	inserted, err = CreatePublicStatusProbeResultIfLeaseOwner(context.Background(), duplicate, ownerID, now+3)
+	require.NoError(t, err)
+	assert.False(t, inserted)
+}
+
+func TestPublicStatusProbeResultExistsByTargetAndSlot(t *testing.T) {
+	setupPublicStatusProbeTestDB(t)
+	const (
+		targetKey = "target-exists"
+		slot      = publicStatusProbeTestBaseSlot
+	)
+
+	exists, err := PublicStatusProbeResultExists(targetKey, slot)
+	require.NoError(t, err)
+	assert.False(t, exists)
+
+	inserted, err := CreatePublicStatusProbeResult(newPublicStatusProbeResult(targetKey, slot, slot+10))
+	require.NoError(t, err)
+	require.True(t, inserted)
+
+	exists, err = PublicStatusProbeResultExists(" target-exists ", slot)
+	require.NoError(t, err)
+	assert.True(t, exists)
+	exists, err = PublicStatusProbeResultExists(targetKey, slot+60)
+	require.NoError(t, err)
+	assert.False(t, exists)
+	exists, err = PublicStatusProbeResultExists("other-target", slot)
+	require.NoError(t, err)
+	assert.False(t, exists)
+
+	for _, testCase := range []struct {
+		name          string
+		targetKey     string
+		slotStartedAt int64
+	}{
+		{name: "empty target", targetKey: "", slotStartedAt: slot},
+		{name: "non-positive slot", targetKey: targetKey, slotStartedAt: 0},
+		{name: "non-boundary slot", targetKey: targetKey, slotStartedAt: slot + 1},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			exists, err := PublicStatusProbeResultExists(testCase.targetKey, testCase.slotStartedAt)
+			assert.Error(t, err)
+			assert.False(t, exists)
+		})
+	}
 }
 
 func TestPublicStatusProbeLatestResultsAreCappedAndChronological(t *testing.T) {
@@ -315,4 +392,149 @@ func TestPublicStatusProbeLeaseNoOpUpdateConfirmsCurrentOwner(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, renewed)
 	assert.Equal(t, 4, fallbackReads)
+}
+
+func TestCompletePublicStatusProbeLeaseOwnerAndBoundaries(t *testing.T) {
+	setupPublicStatusProbeTestDB(t)
+	const (
+		targetKey        = "target-complete"
+		ownerID          = "owner-a"
+		otherOwnerID     = "owner-b"
+		now              = publicStatusProbeTestBaseSlot + 30
+		activeLeaseUntil = publicStatusProbeTestBaseSlot + 120
+		holdUntil        = publicStatusProbeTestBaseSlot + 60
+	)
+
+	acquired, err := AcquirePublicStatusProbeLease(targetKey, ownerID, now, activeLeaseUntil)
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	completed, err := CompletePublicStatusProbeLease(targetKey, otherOwnerID, now+1, holdUntil)
+	require.NoError(t, err)
+	assert.False(t, completed)
+	var lease PublicStatusProbeLease
+	require.NoError(t, DB.First(&lease, "target_key = ?", targetKey).Error)
+	assert.Equal(t, ownerID, lease.OwnerID)
+	assert.Equal(t, activeLeaseUntil, lease.LeaseUntil)
+	assert.Equal(t, now, lease.UpdatedAt)
+
+	completed, err = CompletePublicStatusProbeLease(targetKey, ownerID, holdUntil+1, holdUntil)
+	assert.Error(t, err)
+	assert.False(t, completed)
+	completed, err = CompletePublicStatusProbeLease(targetKey, ownerID, now+1, holdUntil+1)
+	assert.Error(t, err)
+	assert.False(t, completed)
+
+	completedAt := now + 2
+	completed, err = CompletePublicStatusProbeLease(" target-complete ", " owner-a ", completedAt, holdUntil)
+	require.NoError(t, err)
+	assert.True(t, completed)
+	require.NoError(t, DB.First(&lease, "target_key = ?", targetKey).Error)
+	assert.Empty(t, lease.OwnerID)
+	assert.Equal(t, holdUntil, lease.LeaseUntil)
+	assert.Equal(t, completedAt, lease.UpdatedAt)
+
+	acquired, err = AcquirePublicStatusProbeLease(targetKey, otherOwnerID, holdUntil-1, holdUntil+60)
+	require.NoError(t, err)
+	assert.False(t, acquired)
+	acquired, err = AcquirePublicStatusProbeLease(targetKey, otherOwnerID, holdUntil, holdUntil+60)
+	require.NoError(t, err)
+	assert.True(t, acquired)
+}
+
+func TestCompletePublicStatusProbeLeaseAllowsHoldAtNow(t *testing.T) {
+	setupPublicStatusProbeTestDB(t)
+	const (
+		targetKey = "target-complete-at-now"
+		ownerID   = "owner-a"
+		now       = publicStatusProbeTestBaseSlot + 60
+	)
+
+	acquired, err := AcquirePublicStatusProbeLease(targetKey, ownerID, now-30, now+60)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	completed, err := CompletePublicStatusProbeLease(targetKey, ownerID, now, now)
+	require.NoError(t, err)
+	assert.True(t, completed)
+
+	var lease PublicStatusProbeLease
+	require.NoError(t, DB.First(&lease, "target_key = ?", targetKey).Error)
+	assert.Empty(t, lease.OwnerID)
+	assert.Equal(t, now, lease.LeaseUntil)
+	assert.Equal(t, now, lease.UpdatedAt)
+}
+
+func TestCompletePublicStatusProbeLeaseRejectsExpiredOwner(t *testing.T) {
+	setupPublicStatusProbeTestDB(t)
+	const (
+		targetKey = "target-complete-expired"
+		ownerID   = "owner-a"
+		now       = publicStatusProbeTestBaseSlot + 30
+		leaseEnd  = publicStatusProbeTestBaseSlot + 60
+		holdUntil = publicStatusProbeTestBaseSlot + 120
+	)
+
+	acquired, err := AcquirePublicStatusProbeLease(targetKey, ownerID, now, leaseEnd)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	completed, err := CompletePublicStatusProbeLease(targetKey, ownerID, leaseEnd, holdUntil)
+	require.NoError(t, err)
+	assert.False(t, completed)
+
+	var lease PublicStatusProbeLease
+	require.NoError(t, DB.First(&lease, "target_key = ?", targetKey).Error)
+	assert.Equal(t, ownerID, lease.OwnerID)
+	assert.Equal(t, leaseEnd, lease.LeaseUntil)
+	assert.Equal(t, now, lease.UpdatedAt)
+}
+
+func TestCompletePublicStatusProbeLeaseConcurrentSingleWinner(t *testing.T) {
+	setupPublicStatusProbeTestDB(t)
+	const (
+		targetKey = "target-complete-race"
+		ownerID   = "owner-a"
+		now       = publicStatusProbeTestBaseSlot + 30
+		holdUntil = publicStatusProbeTestBaseSlot + 60
+		workers   = 8
+	)
+
+	acquired, err := AcquirePublicStatusProbeLease(targetKey, ownerID, now, holdUntil+60)
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	ready := make(chan struct{}, workers)
+	start := make(chan struct{})
+	type completion struct {
+		completed bool
+		err       error
+	}
+	results := make(chan completion, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			ready <- struct{}{}
+			<-start
+			completed, err := CompletePublicStatusProbeLease(targetKey, ownerID, now+1, holdUntil)
+			results <- completion{completed: completed, err: err}
+		}()
+	}
+	for i := 0; i < workers; i++ {
+		<-ready
+	}
+	close(start)
+
+	winners := 0
+	for i := 0; i < workers; i++ {
+		result := <-results
+		require.NoError(t, result.err)
+		if result.completed {
+			winners++
+		}
+	}
+	assert.Equal(t, 1, winners)
+
+	var lease PublicStatusProbeLease
+	require.NoError(t, DB.First(&lease, "target_key = ?", targetKey).Error)
+	assert.Empty(t, lease.OwnerID)
+	assert.Equal(t, holdUntil, lease.LeaseUntil)
+	assert.Equal(t, now+1, lease.UpdatedAt)
 }
