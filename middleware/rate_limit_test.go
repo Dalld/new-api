@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var memoryRateLimitTestIPSequence atomic.Uint32
+
+func nextMemoryRateLimitTestRemoteAddr() string {
+	sequence := memoryRateLimitTestIPSequence.Add(1)
+	return "198.18." + strconv.FormatUint(uint64(sequence/254), 10) + "." + strconv.FormatUint(uint64(sequence%254+1), 10) + ":12345"
+}
 
 func useRateLimitMiniRedis(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
 	t.Helper()
@@ -222,4 +230,59 @@ func TestRedisFailurePolicies(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, userResponse.Code)
 	assert.Empty(t, userResponse.Body.String())
 	assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/email", "192.0.2.62:12345").Code)
+}
+
+func TestPublicStatusProbeRateLimitRemainsEnabledWhenGlobalAPILimitIsDisabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousRedisEnabled := common.RedisEnabled
+	previousGlobalAPIRateLimitEnable := common.GlobalApiRateLimitEnable
+	common.RedisEnabled = false
+	common.GlobalApiRateLimitEnable = false
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+		common.GlobalApiRateLimitEnable = previousGlobalAPIRateLimitEnable
+	})
+
+	router := gin.New()
+	require.NoError(t, router.SetTrustedProxies(nil))
+	router.GET(
+		"/status/probes",
+		GlobalAPIRateLimit(),
+		PublicStatusProbeRateLimit(),
+		func(c *gin.Context) { c.Status(http.StatusNoContent) },
+	)
+
+	remoteAddr := nextMemoryRateLimitTestRemoteAddr()
+	for range publicStatusProbeRateLimitNum {
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/status/probes", remoteAddr).Code)
+	}
+	limitedResponse := performRateLimitRequest(router, "/status/probes", remoteAddr)
+	assert.Equal(t, http.StatusTooManyRequests, limitedResponse.Code)
+	assert.Equal(t, strconv.FormatInt(publicStatusProbeRateLimitDuration, 10), limitedResponse.Header().Get("Retry-After"))
+
+	assert.Equal(
+		t,
+		http.StatusNoContent,
+		performRateLimitRequest(router, "/status/probes", nextMemoryRateLimitTestRemoteAddr()).Code,
+		"the public status probe limit must be isolated per IP",
+	)
+}
+
+func TestPublicStatusProbeRateLimitUsesDedicatedRedisNamespace(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	redisServer, _ := useRateLimitMiniRedis(t)
+
+	router := gin.New()
+	require.NoError(t, router.SetTrustedProxies(nil))
+	router.GET(
+		"/status/probes",
+		PublicStatusProbeRateLimit(),
+		func(c *gin.Context) { c.Status(http.StatusNoContent) },
+	)
+
+	remoteAddr := "192.0.2.90:12345"
+	response := performRateLimitRequest(router, "/status/probes", remoteAddr)
+	require.Equal(t, http.StatusNoContent, response.Code)
+	assert.True(t, redisServer.Exists(redisIPRateLimitKey(publicStatusProbeRateLimitMark, "192.0.2.90")))
+	assert.False(t, redisServer.Exists(redisIPRateLimitKey("GA", "192.0.2.90")))
 }

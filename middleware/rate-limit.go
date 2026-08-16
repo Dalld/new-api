@@ -14,6 +14,12 @@ import (
 
 const redisRateLimitNamespace = "rateLimit:v2"
 
+const (
+	publicStatusProbeRateLimitNum      = 120
+	publicStatusProbeRateLimitDuration = int64(60)
+	publicStatusProbeRateLimitMark     = "PSP"
+)
+
 // Redis rate limiting intentionally uses a fixed window. The single Lua script
 // makes increment, expiry, and the limit decision atomic, while retaining the
 // simple fixed-window behavior: traffic at a window boundary can burst up to
@@ -169,6 +175,16 @@ func GlobalAPIRateLimit() func(c *gin.Context) {
 		return rateLimitFactory(common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration, "GA")
 	}
 	return defNext
+}
+
+// PublicStatusProbeRateLimit protects the anonymous public probe endpoint
+// independently of the optional global API rate limiter.
+func PublicStatusProbeRateLimit() func(c *gin.Context) {
+	return rateLimitFactory(
+		publicStatusProbeRateLimitNum,
+		publicStatusProbeRateLimitDuration,
+		publicStatusProbeRateLimitMark,
+	)
 }
 
 func CriticalRateLimit() func(c *gin.Context) {

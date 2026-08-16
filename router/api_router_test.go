@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -15,6 +16,22 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+var publicStatusProbeRouteTestIPSequence atomic.Uint32
+
+func nextPublicStatusProbeRouteTestRemoteAddr() string {
+	sequence := publicStatusProbeRouteTestIPSequence.Add(1)
+	return "198.19." + strconv.FormatUint(uint64(sequence/254), 10) + "." + strconv.FormatUint(uint64(sequence%254+1), 10) + ":12345"
+}
+
+func usePublicStatusProbeMemoryRateLimit(t *testing.T) {
+	t.Helper()
+	previousRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+	})
+}
 
 func setupAffiliateBindRouteTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -59,6 +76,8 @@ func TestPublicStatusAndAffiliateRoutesAreRegistered(t *testing.T) {
 		_, exists := routes[route]
 		assert.True(t, exists, "missing route %s", route)
 	}
+	_, exists := routes[http.MethodPost+" /api/status/probes"]
+	assert.False(t, exists, "public status probe limit must only be registered on GET")
 }
 
 func TestAffiliateOverviewRouteRejectsAnonymousRequests(t *testing.T) {
@@ -185,28 +204,58 @@ func TestAffiliateBindRouteAllowsRootAdministrator(t *testing.T) {
 
 func TestPublicStatusProbeRouteRequiresNoAuthentication(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	usePublicStatusProbeMemoryRateLimit(t)
 	engine := gin.New()
 	SetApiRouter(engine)
 
 	request := httptest.NewRequest(http.MethodGet, "/api/status/probes", nil)
+	request.RemoteAddr = nextPublicStatusProbeRouteTestRemoteAddr()
 	response := httptest.NewRecorder()
 	require.NotPanics(t, func() { engine.ServeHTTP(response, request) })
 	require.Equal(t, http.StatusOK, response.Code)
-	assert.Equal(t, "public, max-age=15", response.Header().Get("Cache-Control"))
+	assert.Equal(t, "public,max-age=15", strings.ReplaceAll(response.Header().Get("Cache-Control"), " ", ""))
 	var payload struct {
 		Success bool `json:"success"`
 		Data    struct {
 			GeneratedAt     int64 `json:"generated_at"`
-			IntervalMinutes int   `json:"interval_minutes"`
-			Groups          []any `json:"groups"`
+			IntervalSeconds int   `json:"interval_seconds"`
+			Targets         []any `json:"targets"`
 		} `json:"data"`
 	}
 	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &payload))
 	assert.True(t, payload.Success)
 	assert.Positive(t, payload.Data.GeneratedAt)
-	assert.Equal(t, 10, payload.Data.IntervalMinutes)
-	assert.NotNil(t, payload.Data.Groups)
-	assert.Empty(t, payload.Data.Groups)
+	assert.Equal(t, 60, payload.Data.IntervalSeconds)
+	assert.NotNil(t, payload.Data.Targets)
+}
+
+func TestPublicStatusProbeRouteHasIndependentRateLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	usePublicStatusProbeMemoryRateLimit(t)
+	previousGlobalAPIRateLimitEnable := common.GlobalApiRateLimitEnable
+	common.GlobalApiRateLimitEnable = false
+	t.Cleanup(func() {
+		common.GlobalApiRateLimitEnable = previousGlobalAPIRateLimitEnable
+	})
+
+	engine := gin.New()
+	require.NoError(t, engine.SetTrustedProxies(nil))
+	SetApiRouter(engine)
+	remoteAddr := nextPublicStatusProbeRouteTestRemoteAddr()
+	for range 120 {
+		request := httptest.NewRequest(http.MethodGet, "/api/status/probes", nil)
+		request.RemoteAddr = remoteAddr
+		response := httptest.NewRecorder()
+		engine.ServeHTTP(response, request)
+		require.Equal(t, http.StatusOK, response.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/status/probes", nil)
+	request.RemoteAddr = remoteAddr
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	assert.Equal(t, http.StatusTooManyRequests, response.Code)
+	assert.Equal(t, "60", response.Header().Get("Retry-After"))
 }
 
 func TestGroupProbeAdminRoutesAreNotRegistered(t *testing.T) {
