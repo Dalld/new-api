@@ -162,6 +162,13 @@ func buildPublicStatusProbeResponse(now time.Time) (publicStatusProbeResponseDTO
 }
 
 func publicStatusProbeTarget(configuredTarget public_status_probe_setting.Target, results []model.PublicStatusProbeResult, nextCheckAt int64) publicStatusProbeTargetDTO {
+	matchingResults := make([]model.PublicStatusProbeResult, 0, len(results))
+	for _, result := range results {
+		if result.ChannelID == configuredTarget.ChannelID && result.ModelName == configuredTarget.Model {
+			matchingResults = append(matchingResults, result)
+		}
+	}
+	results = matchingResults
 	if len(results) > model.MaxPublicStatusProbeHistory {
 		results = results[len(results)-model.MaxPublicStatusProbeHistory:]
 	}

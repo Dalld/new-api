@@ -73,9 +73,9 @@ func TestPublicStatusProbeExactContractAndPrivateFieldsExcluded(t *testing.T) {
 		switch targetKey {
 		case "public-codex":
 			return []model.PublicStatusProbeResult{
-				{ID: 1, TargetKey: targetKey, GroupName: "private-db-group", DisplayName: "private-db-name", ModelName: "private-db-model", ChannelID: 42, SlotStartedAt: 1_786_852_100, CheckedAt: 1_786_852_114, State: model.PublicStatusProbeStateOperational, PingLatencyMS: int64Pointer(257), ChatLatencyMS: int64Pointer(5_061)},
-				{ID: 2, TargetKey: targetKey, ChannelID: 42, SlotStartedAt: 1_786_852_160, CheckedAt: 1_786_852_174, State: model.PublicStatusProbeStateDegraded, PingLatencyMS: int64Pointer(301), ChatLatencyMS: int64Pointer(6_100), ErrorCode: "provider_rejected"},
-				{ID: 3, TargetKey: targetKey, ChannelID: 42, SlotStartedAt: 1_786_852_220, CheckedAt: 1_786_852_234, State: model.PublicStatusProbeStateFailed, ErrorCode: "timeout"},
+				{ID: 1, TargetKey: targetKey, GroupName: "private-db-group", DisplayName: "private-db-name", ModelName: "gpt-5.5", ChannelID: 42, SlotStartedAt: 1_786_852_100, CheckedAt: 1_786_852_114, State: model.PublicStatusProbeStateOperational, PingLatencyMS: int64Pointer(257), ChatLatencyMS: int64Pointer(5_061)},
+				{ID: 2, TargetKey: targetKey, ModelName: "gpt-5.5", ChannelID: 42, SlotStartedAt: 1_786_852_160, CheckedAt: 1_786_852_174, State: model.PublicStatusProbeStateDegraded, PingLatencyMS: int64Pointer(301), ChatLatencyMS: int64Pointer(6_100), ErrorCode: "provider_rejected"},
+				{ID: 3, TargetKey: targetKey, ModelName: "gpt-5.5", ChannelID: 42, SlotStartedAt: 1_786_852_220, CheckedAt: 1_786_852_234, State: model.PublicStatusProbeStateFailed, ErrorCode: "timeout"},
 			}, nil
 		case "public-gemini":
 			return nil, nil
@@ -131,10 +131,33 @@ func TestPublicStatusProbeExactContractAndPrivateFieldsExcluded(t *testing.T) {
     }`, recorder.Body.String())
 	for _, privateMarker := range []string{
 		`"channel_id"`, `"key_index"`, `"base_url"`, `"api_key"`, `"target_key"`,
-		`"slot_started_at"`, `"id"`, "private-db-group", "private-db-name", "private-db-model",
+		`"slot_started_at"`, `"id"`, "private-db-group", "private-db-name",
 	} {
 		assert.NotContains(t, recorder.Body.String(), privateMarker)
 	}
+}
+
+func TestPublicStatusProbeExcludesHistoryFromReusedTargetIdentity(t *testing.T) {
+	configuredTarget := public_status_probe_setting.Target{
+		Key:         "reused-key",
+		Group:       "codex",
+		DisplayName: "Codex",
+		Model:       "gpt-5.5",
+		ChannelID:   42,
+	}
+	results := []model.PublicStatusProbeResult{
+		{TargetKey: "reused-key", ChannelID: 7, ModelName: "gpt-5.5", CheckedAt: 100, State: model.PublicStatusProbeStateFailed},
+		{TargetKey: "reused-key", ChannelID: 42, ModelName: "old-model", CheckedAt: 160, State: model.PublicStatusProbeStateFailed},
+		{TargetKey: "reused-key", ChannelID: 42, ModelName: "gpt-5.5", CheckedAt: 220, State: model.PublicStatusProbeStateOperational},
+	}
+
+	target := publicStatusProbeTarget(configuredTarget, results, 300)
+
+	require.Len(t, target.History, 1)
+	assert.Equal(t, int64(220), target.History[0].CheckedAt)
+	assert.Equal(t, string(model.PublicStatusProbeStateOperational), target.State)
+	require.NotNil(t, target.Availability)
+	assert.Equal(t, 1.0, *target.Availability)
 }
 
 func TestPublicStatusProbeCacheExpiresAfterFifteenSeconds(t *testing.T) {
