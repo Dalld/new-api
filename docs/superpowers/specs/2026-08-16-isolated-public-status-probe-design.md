@@ -71,6 +71,7 @@ Each private target contains:
   "group": "codex",
   "display_name": "Codex",
   "model": "gpt-5.5",
+  "protocol": "openai_responses",
   "channel_id": 123,
   "key_index": 0
 }
@@ -82,6 +83,16 @@ Explicit representative channels make observations reproducible and avoid
 calling production routing or mutating round-robin key selection. Missing,
 disabled, deleted, or unsupported targets produce a sanitized failed point;
 the probe does not fall back to a different channel.
+
+`protocol` is required and is one of `openai_chat`, `openai_responses`,
+`anthropic_messages`, or `gemini_generate_content`. It is never inferred from
+the model name or relay routing. The loader accepts only a channel type whose
+native upstream protocol matches the configured protocol. Codex OAuth,
+advanced/custom converters, proxies, non-empty header overrides, and other
+special authentication paths are `unsupported_provider`. Model mapping is
+parsed read-only and applied once before the immutable snapshot is created.
+For multi-key channels, an explicitly selected disabled key produces
+`invalid_target`; no other key is selected.
 
 At most 20 targets are accepted. Strings are trimmed, UTF-8 validated, and
 length bounded. Invalid configuration disables the probe and logs one bounded
@@ -160,10 +171,15 @@ targets exist. Its first run begins on the next complete 60-second UTC slot.
 It does not backfill missed slots.
 
 Each target has an independent database lease. Acquisition is an atomic
-compare-and-swap on `lease_until`; the lease duration is longer than the maximum
-probe timeout and is renewed only while a probe is active. A process-local
+compare-and-swap on `lease_until`; the active lease duration is longer than the
+maximum probe timeout and is renewed only while a probe is active. After a
+result is stored, the owner changes the lease into a completed hold through the
+end of the current UTC slot instead of releasing it immediately. A late
+instance first checks for an existing target/slot result, then acquires the
+lease, and checks again before calling the provider. A process-local
 non-reentrant guard skips a new cycle while its previous cycle is still active.
-Expired leases are recoverable after process death.
+After process death, an abandoned active lease may skip a slot but expires so a
+later slot can proceed; missed slots are never retried.
 
 A unique `(target_key, slot_started_at)` constraint is the final duplicate
 barrier. When two instances observe the same slot, at most one can own the
@@ -196,9 +212,11 @@ cannot break history queries.
 
 ### 8.2 `public_status_probe_leases`
 
-One row per target stores owner id, lease expiry, and update time. It contains no
-credential or request data. Rollback may leave both new tables in place because
-older application images do not read them.
+One row per target stores owner id, lease expiry, and update time. A completed
+hold has an empty owner and a `lease_until` at the next slot boundary; it still
+blocks reacquisition until that boundary. The row contains no credential or
+request data. Rollback may leave both new tables in place because older
+application images do not read them.
 
 Retention cleanup runs at most once every 12 hours and deletes only rows older
 than the configured retention. Public queries use an indexed per-target latest
@@ -249,6 +267,11 @@ successful (`operational` or `degraded`) points divided by completed points in
 those 60 observations. The frontend pads missing points; the API never invents
 timestamps or latency values.
 
+The public `key` is the configured opaque target identifier used for stable UI
+identity. It is not an API credential. Private selectors and secrets including
+`channel_id`, `key_index`, `base_url`, provider keys, and headers are forbidden
+from the response.
+
 The serializer is an explicit allowlist and never serializes database models.
 Only localized public error labels are shown. Internal logs use sanitized codes
 and target keys, not raw provider errors.
@@ -287,6 +310,16 @@ focus, and the active point when that point still exists. It must not announce
 every refresh or resize cards. Loading, empty, stale, partial, API error, and
 manual refresh states have fixed dimensions and text equivalents.
 
+Unknown padding points use `target key + placeholder slot index` as their local
+identity; real points use `target key + checked_at`. A target is stale when it
+has a latest point and `generated_at - latest_checked_at` exceeds two probe
+intervals. The aggregate badge is `unknown` when no target has a completed
+point, `stale` when every completed target is stale, `partial` when fresh latest
+states contain both success and failure, `failed` when all fresh latest states
+failed, `degraded` when there is no failure but at least one degraded state, and
+`operational` when all fresh latest states are operational. Unknown targets are
+shown as collecting data and do not manufacture a partial outage.
+
 ## 11. Removal of the previous implementation
 
 The implementation deletes or disconnects only prior group-probe additions:
@@ -316,7 +349,12 @@ probes:
 - consume-log count, hashes, and quota sums;
 - original channel test and automatic monitoring task behavior.
 
-All values must remain byte-for-byte equal. Public probing may write only its
+Channel runtime fields, multi-key state, and original task configuration must
+remain byte-for-byte equal. Deterministic integration fixtures must also prove
+that quota and consume-log tables are unchanged. On the live qiniu server,
+where real traffic may legitimately change quotas and logs during a three-minute
+window, verification compares scoped deltas and confirms that no row or quota
+change is attributable to the probe. Public probing itself may write only its
 result and lease tables.
 
 ### 12.2 Scheduling and data

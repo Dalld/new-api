@@ -297,7 +297,7 @@ Expected grep output: empty.
 
 - [ ] **Step 1: Write loader and scheduler tests**
 
-Assert a configured channel is copied with only type, base URL, organization, model mapping/protocol fields, and explicitly indexed key. Missing/disabled/deleted channels, out-of-range key indexes, and unsupported types create sanitized failed points and never select another channel.
+Assert a configured channel is copied with only type, base URL, organization, model mapping/protocol fields, and explicitly indexed key. Require the target's explicit protocol and reject protocol/channel mismatches. Missing/disabled/deleted channels, out-of-range or disabled key indexes, Codex OAuth, custom converters, proxies, non-empty header overrides, and unsupported types create sanitized failed points and never select another channel or key.
 
 Test scheduler contracts with a fake clock/repository/client:
 
@@ -312,11 +312,11 @@ Test scheduler contracts with a fake clock/repository/client:
 
 - [ ] **Step 2: Implement immutable snapshot loading**
 
-Query the configured channel ID directly with `model.DB.Select(...)`. Copy the channel and parse keys without calling `GetNextEnabledKey`; choose `keys[target.KeyIndex]` from the local copy. Never write the channel or cache.
+Query the configured channel ID directly with `model.DB.Select(...)`. Copy the channel and parse keys without calling `GetNextEnabledKey`; choose `keys[target.KeyIndex]` from the local copy and verify that exact key is enabled. Parse and apply model mapping locally. Map only explicit `openai_chat`, `openai_responses`, `anthropic_messages`, and `gemini_generate_content` targets whose native channel type matches. Never write the channel or cache.
 
 - [ ] **Step 3: Implement the scheduler**
 
-`Start(ctx, setting)` returns immediately when disabled/invalid/empty. Otherwise, wait until `now.UTC().Truncate(interval).Add(interval)`, guard the whole cycle with `atomic.Bool`, and process targets through a fixed semaphore. Run Ping and conversation concurrently under their own timeouts, derive health only from conversation validation, write one point, and release the target lease.
+`Start(ctx, setting)` returns immediately when disabled/invalid/empty. Otherwise, wait until `now.UTC().Truncate(interval).Add(interval)`, guard the whole cycle with `atomic.Bool`, and process targets through a fixed semaphore. Run Ping and conversation concurrently under their own timeouts and derive health only from conversation validation. Check for an existing target/slot result before and immediately after lease acquisition. After writing one point, convert the lease to a completed hold until the next slot boundary; never release it to zero inside the same slot. An abandoned active lease may skip work but must expire without backfill.
 
 - [ ] **Step 4: Add process startup wiring and commit**
 
@@ -332,7 +332,7 @@ git commit -m "feat: schedule isolated public status probes"
 
 - [ ] **Step 1: Write controller contract tests**
 
-Assert exact response fields, oldest-to-newest history, at most 60 real observations, availability `(operational + degraded) / completed`, latest values, next UTC slot, 15-second cache, ETag/304, and rate limiting. Marshal the response and assert it never contains `channel_id`, `key_index`, `base_url`, `key`, credentials, raw response, or stack text.
+Assert exact response fields, oldest-to-newest history, at most 60 real observations, availability `(operational + degraded) / completed`, latest values, next UTC slot, 15-second cache, ETag/304, and a dedicated public rate limiter that remains active when the global limiter is disabled. Marshal the response and assert it includes the opaque public target `key` but never contains `channel_id`, `key_index`, `base_url`, `api_key`, credentials, raw response, or stack text.
 
 - [ ] **Step 2: Implement controller DTOs and cache**
 
@@ -362,7 +362,7 @@ git commit -m "feat: publish isolated status probe history"
 
 - [ ] **Step 1: Write TypeScript data tests**
 
-Cover successful decoding, nullable dual latency, unknown state handling, oldest-to-newest ordering, fewer than 60 real points padded on the left, and stable point identities based on target key plus `checked_at`.
+Cover successful decoding, nullable dual latency, unknown state handling, oldest-to-newest ordering, fewer than 60 real points padded on the left, real-point identities based on target key plus `checked_at`, and placeholder identities based on target key plus fixed slot index.
 
 ```ts
 expect(padProbeHistory(history)).toHaveLength(60)
@@ -424,7 +424,7 @@ git commit -m "feat: show dual-latency public status history"
 
 - [ ] **Step 1: Add before/after isolation integration tests**
 
-Create fixtures with cache both enabled and disabled. Snapshot channel rows including status/test time/response time/key/channel info, multi-key polling index/order, users/subscriptions quotas, consume-log count/hash/sums, quota data, and original monitor task state. Execute successful, failed, validation-failed, unsupported, and timed-out probes; compare every snapshot byte-for-byte. The only changed tables must be `public_status_probe_results` and `public_status_probe_leases`.
+Create deterministic fixtures with cache both enabled and disabled. Snapshot channel rows including status/test time/response time/key/channel info, multi-key polling index/order, users/subscriptions quotas, consume-log count/hash/sums, quota data, and original monitor task state. Execute successful, failed, validation-failed, unsupported, and timed-out probes; compare every fixture snapshot byte-for-byte. The only changed tables must be `public_status_probe_results` and `public_status_probe_leases`.
 
 - [ ] **Step 2: Run forbidden-call and write-surface scans**
 
@@ -473,7 +473,7 @@ Through Xterminal, record the effective Compose files, container IDs/images/star
 
 - [ ] **Step 2: Create a fresh timestamped rollback directory**
 
-Preserve `.env`, every effective Compose file, `docker compose config`, `docker inspect` for all three services, the exact current immutable New API image reference, and current container metadata. Create and verify a MySQL logical dump without restarting or recreating MySQL.
+Preserve `.env`, every effective Compose file, `docker compose config`, `docker inspect` for all three services, the exact current immutable New API image reference, and current container metadata. Create and verify a MySQL logical dump without restarting or recreating MySQL. Create the rollback directory with mode `0700`, keep secret-bearing files at `0600`, and generate a separate redacted manifest for the acceptance report.
 
 - [ ] **Step 3: Capture isolation baselines**
 
@@ -495,7 +495,7 @@ Do not run a project-wide `up`, `restart`, or `down`. Do not restart or recreate
 
 - [ ] **Step 6: Verify and rollback on any gate failure**
 
-Require healthy New API, HTTP 200 from `/api/status`, `/api/status/probes`, and `/status`, no panic/migration/unknown-column/credential logs, unchanged MySQL and Redis container identity/start/restart metadata, and stable channel/quota/log snapshots after at least three 60-second cycles. On failure, point the override back to the preserved image and run the same `up -d --no-deps --no-build --pull never new-api` command.
+Require healthy New API, HTTP 200 from `/api/status`, `/api/status/probes`, and `/status`, no panic/migration/unknown-column/credential logs, unchanged MySQL and Redis container identity/start/restart metadata, byte-equal channel runtime and multi-key state, and scoped quota/log deltas showing no probe-attributable writes after at least three 60-second cycles. On failure, point the override back to the preserved image and run the same `up -d --no-deps --no-build --pull never new-api` command.
 
 ### Task 12: User Acceptance and GitHub Hold
 
