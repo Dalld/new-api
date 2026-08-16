@@ -19,200 +19,366 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
+import type {
+  PublicProbePoint,
+  PublicProbeResponse,
+  PublicProbeTarget,
+} from '../types'
+
 const bunTestModule = 'bun:test'
 const { mock } = await import(bunTestModule)
+const apiRequests: Array<{
+  url: string
+  config: { skipErrorHandler?: boolean }
+}> = []
 
 mock.module('@/lib/api', () => ({
   api: {
-    get: async () => ({ data: { success: true, data: [] } }),
+    get: async (url: string, config: { skipErrorHandler?: boolean } = {}) => {
+      apiRequests.push({ url, config })
+      return {
+        data: {
+          success: true,
+          data: { generated_at: 1, interval_seconds: 60, targets: [] },
+        },
+      }
+    },
   },
 }))
 
-const { groupProbeStatusQueryOptions, parsePublicGroupProbeStatus } =
+const { groupProbeStatusQueryOptions, parsePublicProbeStatus } =
   await import('../api')
+const { normalizeProbeHistory, padProbeHistory } = await import('../history')
 
 const generatedAt = 2_000_001_600
 
-describe('public group probe API', () => {
-  test('uses the public endpoint query cadence', () => {
+function point(
+  checkedAt: number,
+  overrides: Partial<PublicProbePoint> = {}
+): PublicProbePoint {
+  return {
+    checked_at: checkedAt,
+    state: 'operational',
+    ping_latency_ms: 123,
+    chat_latency_ms: 456,
+    error_code: null,
+    ...overrides,
+  }
+}
+
+function response(
+  history: PublicProbePoint[] = [point(generatedAt - 30)]
+): PublicProbeResponse {
+  return {
+    success: true,
+    data: {
+      generated_at: generatedAt,
+      interval_seconds: 60,
+      targets: [
+        {
+          key: 'codex-gpt-5-5',
+          group: 'codex',
+          display_name: 'Codex',
+          model: 'gpt-5.5',
+          state: 'operational',
+          availability: 1,
+          ping_latency_ms: 123,
+          chat_latency_ms: 456,
+          latest_checked_at: generatedAt - 30,
+          next_check_at: generatedAt + 60,
+          history,
+        },
+      ],
+    },
+  }
+}
+
+describe('public probe API', () => {
+  test('decodes every public state and nullable dual latencies', () => {
+    const input = response([
+      point(generatedAt - 60, {
+        state: 'degraded',
+        ping_latency_ms: null,
+      }),
+      point(generatedAt, {
+        state: 'unknown',
+        chat_latency_ms: null,
+        error_code: 'timeout',
+      }),
+      point(generatedAt + 60, {
+        state: 'validation_failed',
+        error_code: 'validation_failed',
+      }),
+      point(generatedAt + 120, {
+        state: 'failed',
+        ping_latency_ms: null,
+        chat_latency_ms: null,
+        error_code: 'network_error',
+      }),
+    ])
+    input.data.targets[0]!.state = 'validation_failed'
+    input.data.targets[0]!.availability = null
+    input.data.targets[0]!.ping_latency_ms = null
+    input.data.targets[0]!.chat_latency_ms = null
+    input.data.targets[0]!.latest_checked_at = null
+
+    assert.deepEqual(parsePublicProbeStatus(input), input.data)
+  })
+
+  test('rejects unsuccessful, legacy, extra-field, and malformed responses', () => {
+    const missingKeyTarget: Partial<PublicProbeTarget> = {
+      ...response().data.targets[0]!,
+    }
+    delete missingKeyTarget.key
+
+    const invalidResponses: unknown[] = [
+      { success: false, message: 'unavailable' },
+      { success: true, data: [] },
+      { success: true, data: { generated_at: 1, groups: [] } },
+      { ...response(), request_id: 'not-in-public-contract' },
+      {
+        ...response(),
+        data: { ...response().data, interval_seconds: 30 },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [{ ...response().data.targets[0], state: 'healthy' }],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [{ ...response().data.targets[0], ping_latency_ms: -1 }],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [{ ...response().data.targets[0], availability: 1.01 }],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [
+            {
+              ...response().data.targets[0],
+              history: [point(-1)],
+            },
+          ],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [
+            {
+              ...response().data.targets[0],
+              history: [
+                { ...point(generatedAt), error_code: 'raw_provider_error' },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [{ ...response().data.targets[0], channel_id: 42 }],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [
+            {
+              ...response().data.targets[0],
+              history: [{ ...point(generatedAt), api_key: 'secret' }],
+            },
+          ],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [{ ...response().data.targets[0], key: ' padded-key ' }],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [{ ...response().data.targets[0], key: 'k'.repeat(97) }],
+        },
+      },
+      {
+        ...response(),
+        data: { ...response().data, targets: {} },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [{ ...response().data.targets[0], history: {} }],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: Array.from({ length: 21 }, () => response().data.targets[0]),
+        },
+      },
+      response(
+        Array.from({ length: 61 }, (_, index) => point(generatedAt + index))
+      ),
+      {
+        ...response(),
+        data: { ...response().data, generated_at: 'not-a-number' },
+      },
+      {
+        ...response(),
+        data: { ...response().data, generated_at: 0 },
+      },
+      {
+        ...response(),
+        data: { ...response().data, targets: [missingKeyTarget] },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [
+            response().data.targets[0],
+            { ...response().data.targets[0] },
+          ],
+        },
+      },
+    ]
+
+    for (const invalidResponse of invalidResponses) {
+      assert.throws(() => parsePublicProbeStatus(invalidResponse))
+    }
+  })
+
+  test('sorts and defensively truncates helper input to the latest 60 points', () => {
+    const history = Array.from({ length: 65 }, (_, index) =>
+      point(generatedAt + index)
+    ).reverse()
+    const parsedHistory = normalizeProbeHistory(history)
+
+    assert.equal(parsedHistory.length, 60)
+    assert.equal(parsedHistory[0]!.checked_at, generatedAt + 5)
+    assert.equal(parsedHistory.at(-1)!.checked_at, generatedAt + 64)
+  })
+
+  test('keeps the last input item for duplicate checked_at values', () => {
+    const duplicate = point(generatedAt, {
+      state: 'validation_failed',
+      error_code: 'validation_failed',
+    })
+    const normalized = normalizeProbeHistory([
+      point(generatedAt, { state: 'failed', error_code: 'timeout' }),
+      point(generatedAt - 60),
+      duplicate,
+    ])
+
+    assert.deepEqual(normalized, [point(generatedAt - 60), duplicate])
+    const padded = padProbeHistory(
+      [point(generatedAt), duplicate],
+      'codex-gpt-5-5'
+    )
+    assert.equal(padded.length, 60)
+    assert.equal(padded.at(-1)!.id, `codex-gpt-5-5:${generatedAt}`)
+    assert.equal(padded.at(-1)!.state, 'validation_failed')
+  })
+
+  test('accepts empty and exactly 60-point API histories', () => {
+    assert.deepEqual(
+      parsePublicProbeStatus(response([])).targets[0]!.history,
+      []
+    )
+
+    const exactHistory = Array.from({ length: 60 }, (_, index) =>
+      point(generatedAt + index)
+    ).reverse()
+    const parsed = parsePublicProbeStatus(response(exactHistory))
+    assert.equal(parsed.targets[0]!.history.length, 60)
+    assert.equal(parsed.targets[0]!.history[0]!.checked_at, generatedAt)
+    assert.equal(
+      parsed.targets[0]!.history.at(-1)!.checked_at,
+      generatedAt + 59
+    )
+  })
+
+  test('left-pads short history to exactly 60 points', () => {
+    const latest = point(generatedAt)
+    const padded = padProbeHistory(
+      [latest, point(generatedAt - 60)],
+      'codex-gpt-5-5'
+    )
+
+    assert.equal(padded.length, 60)
+    assert.equal(padded[0]!.placeholder, true)
+    assert.equal(padded[57]!.id, 'codex-gpt-5-5:placeholder:57')
+    assert.equal(padded[58]!.checked_at, generatedAt - 60)
+    assert.equal(padded.at(-1)!.checked_at, latest.checked_at)
+  })
+
+  test('uses stable target-and-time IDs for real points and fixed slot IDs for placeholders', () => {
+    const targetKey = 'codex-gpt-5-5'
+    const history = [point(generatedAt - 60), point(generatedAt)]
+    const first = padProbeHistory(history, targetKey)
+    const repeated = padProbeHistory([...history].reverse(), targetKey)
+    const advanced = padProbeHistory(
+      [point(generatedAt + 60), ...history],
+      targetKey
+    )
+
+    assert.deepEqual(
+      first.map(({ id }) => id),
+      repeated.map(({ id }) => id)
+    )
+    assert.equal(first.at(-1)!.id, `${targetKey}:${generatedAt}`)
+    assert.equal(advanced[0]!.id, `${targetKey}:placeholder:0`)
+    assert.equal(
+      advanced[56]!.id,
+      first[56]!.id,
+      'surviving placeholder slots retain their identity'
+    )
+    assert.equal(advanced.at(-2)!.id, first.at(-1)!.id)
+  })
+
+  test('uses the public endpoint, request options, query cadence, and retry policy', async () => {
+    apiRequests.length = 0
     const options = groupProbeStatusQueryOptions()
 
     assert.deepEqual(options.queryKey, ['public-group-probe-status'])
-    assert.equal(options.refetchInterval, 30_000)
+    assert.equal(options.refetchInterval, 60_000)
     assert.equal(options.staleTime, 15_000)
-  })
+    assert.equal(options.retry, 2)
+    assert.equal(typeof options.queryFn, 'function')
 
-  test('preserves the variable buckets returned for each probe interval', () => {
-    for (const [intervalMinutes, bucketCount] of [
-      [5, 288],
-      [10, 144],
-      [30, 48],
-      [60, 24],
-    ] as const) {
-      const buckets = Array.from({ length: bucketCount }, (_, index) => ({
-        started_at:
-          generatedAt - (bucketCount - 1 - index) * intervalMinutes * 60,
-        state:
-          index === bucketCount - 1
-            ? ('healthy' as const)
-            : ('unknown' as const),
-        sample_count: index === bucketCount - 1 ? 1 : 0,
-      }))
-      const result = parsePublicGroupProbeStatus({
-        success: true,
-        data: {
-          generated_at: generatedAt,
-          interval_minutes: intervalMinutes,
-          groups: [
-            {
-              group_name: `interval-${intervalMinutes}`,
-              display_name: `Interval ${intervalMinutes}`,
-              model_name: 'gpt-5.5',
-              state: 'healthy',
-              interval_minutes: intervalMinutes,
-              buckets,
-            },
-          ],
-        },
-      })
-
-      assert.equal(result.groups[0]?.intervalMinutes, intervalMinutes)
-      assert.equal(result.groups[0]?.buckets.length, bucketCount)
-      assert.deepEqual(result.groups[0]?.buckets[0], {
-        startedAt: buckets[0]?.started_at,
-        state: 'unknown',
-        sampleCount: 0,
-      })
-      assert.deepEqual(result.groups[0]?.buckets.at(-1), {
-        startedAt: generatedAt,
-        state: 'healthy',
-        sampleCount: 1,
-      })
-    }
-  })
-
-  test('normalizes bucket fields without rebuilding the timeline', () => {
-    const result = parsePublicGroupProbeStatus({
-      success: true,
-      message: 'ok',
-      request_id: 'public-request-id',
-      data: {
-        generated_at: generatedAt,
-        interval_minutes: 10,
-        channel_id: 999,
-        groups: [
-          {
-            group_name: 'codex',
-            display_name: 'Codex',
-            model_name: 'gpt-5.5',
-            state: 'healthy',
-            availability_24h: 0.975,
-            avg_latency_ms: 821.4,
-            sample_count: 41,
-            last_checked_at: generatedAt - 30,
-            fresh: true,
-            channel_id: 42,
-            channel_name: 'private-upstream',
-            task_id: 77,
-            error_message: 'secret-key-value',
-            api_key: 'sk-private',
-            buckets: [
-              {
-                bucket_start: generatedAt - 1800,
-                state: 'degraded',
-                sample_count: 2,
-                error: 'must not escape',
-              },
-              {
-                bucket_start: generatedAt,
-                state: 'healthy',
-                sample_count: 1,
-                channel_id: 42,
-              },
-            ],
-          },
-        ],
-      },
-    })
-
-    assert.equal(result.groups.length, 1)
-    assert.equal(result.groups[0]?.buckets.length, 2)
-    assert.deepEqual(result.groups[0]?.buckets, [
+    const result = await (options.queryFn as () => Promise<unknown>)()
+    assert.deepEqual(apiRequests, [
       {
-        startedAt: generatedAt - 1800,
-        state: 'degraded',
-        sampleCount: 2,
+        url: '/api/status/probes',
+        config: { skipErrorHandler: true },
       },
-      { startedAt: generatedAt, state: 'healthy', sampleCount: 1 },
     ])
-
-    const serialized = JSON.stringify(result)
-    for (const protectedValue of [
-      'channel_id',
-      'private-upstream',
-      'task_id',
-      'secret-key-value',
-      'sk-private',
-      'public-request-id',
-    ]) {
-      assert.equal(serialized.includes(protectedValue), false)
-    }
-  })
-
-  test('rejects unsuccessful and malformed public responses', () => {
-    assert.throws(() =>
-      parsePublicGroupProbeStatus({ success: false, data: [] })
-    )
-    assert.throws(() =>
-      parsePublicGroupProbeStatus({
-        success: true,
-        data: [
-          {
-            display_name: 'Missing identifier',
-            model: 'gpt-5.5',
-            state: 'healthy',
-            buckets: [],
-          },
-        ],
-      })
-    )
-    assert.throws(() =>
-      parsePublicGroupProbeStatus({
-        success: true,
-        data: {
-          generated_at: generatedAt,
-          groups: [
-            {
-              group_name: 'missing-interval',
-              display_name: 'Missing interval',
-              model_name: 'gpt-5.5',
-              state: 'healthy',
-              buckets: [],
-            },
-          ],
-        },
-      })
-    )
-    assert.throws(() =>
-      parsePublicGroupProbeStatus({
-        success: true,
-        data: {
-          generated_at: generatedAt,
-          interval_minutes: 5,
-          groups: [
-            {
-              group_name: 'too-many-buckets',
-              display_name: 'Too many buckets',
-              model_name: 'gpt-5.5',
-              state: 'healthy',
-              buckets: Array.from({ length: 289 }, (_, index) => ({
-                started_at: generatedAt + index,
-                state: 'unknown',
-              })),
-            },
-          ],
-        },
-      })
-    )
+    assert.deepEqual(result, {
+      generated_at: 1,
+      interval_seconds: 60,
+      targets: [],
+    })
   })
 })

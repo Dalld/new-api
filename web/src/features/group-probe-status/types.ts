@@ -17,36 +17,73 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-export const GROUP_PROBE_STATES = [
-  'healthy',
+export const PUBLIC_PROBE_STATES = [
+  'operational',
   'degraded',
-  'down',
+  'validation_failed',
+  'failed',
   'unknown',
 ] as const
 
-export type GroupProbeState = (typeof GROUP_PROBE_STATES)[number]
+export type PublicProbeState = (typeof PUBLIC_PROBE_STATES)[number]
 
-export type PublicGroupProbeBucket = {
-  startedAt: number
-  state: GroupProbeState
-  sampleCount: number
+export const PUBLIC_PROBE_ERROR_CODES = [
+  'unsupported_provider',
+  'timeout',
+  'network_error',
+  'provider_rejected',
+  'empty_response',
+  'validation_failed',
+  'invalid_target',
+  'response_too_large',
+] as const
+
+export type PublicProbeErrorCode = (typeof PUBLIC_PROBE_ERROR_CODES)[number]
+
+export type PublicProbePoint = {
+  checked_at: number
+  state: PublicProbeState
+  ping_latency_ms: number | null
+  chat_latency_ms: number | null
+  error_code: PublicProbeErrorCode | null
 }
 
-export type PublicGroupProbe = {
+export type PublicProbeTarget = {
+  key: string
   group: string
-  displayName: string
+  display_name: string
   model: string
-  state: GroupProbeState
+  state: PublicProbeState
   availability: number | null
-  averageLatencyMs: number | null
-  sampleCount: number
-  latestCheckedAt: number | null
-  stale: boolean
-  intervalMinutes: number
-  buckets: PublicGroupProbeBucket[]
+  ping_latency_ms: number | null
+  chat_latency_ms: number | null
+  latest_checked_at: number | null
+  next_check_at: number
+  history: PublicProbePoint[]
 }
 
-export type PublicGroupProbeStatus = {
-  generatedAt: number
-  groups: PublicGroupProbe[]
+export type PublicProbeData = {
+  generated_at: number
+  interval_seconds: 60
+  targets: PublicProbeTarget[]
 }
+
+export type PublicProbeResponse = {
+  success: true
+  data: PublicProbeData
+}
+
+export type PublicProbeHistoryPoint =
+  | (PublicProbePoint & {
+      id: string
+      placeholder: false
+    })
+  | {
+      id: string
+      placeholder: true
+      checked_at: null
+      state: 'unknown'
+      ping_latency_ms: null
+      chat_latency_ms: null
+      error_code: null
+    }
