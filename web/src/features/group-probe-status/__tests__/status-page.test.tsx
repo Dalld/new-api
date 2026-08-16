@@ -259,6 +259,24 @@ describe('public probe status page', () => {
     assert.match(card.textContent ?? '', /96 ms/)
     assert.match(card.textContent ?? '', /Last 60 availability/i)
     assert.match(card.textContent ?? '', /50\.0%/)
+    assert.match(card.className, /min-w-0/)
+
+    const cardHeader = card.querySelector<HTMLElement>('header')
+    assert.ok(cardHeader)
+    assert.match(cardHeader.className, /flex-col/)
+    assert.match(cardHeader.className, /sm:flex-row/)
+
+    const stateBadge = cardHeader.querySelector<HTMLElement>(
+      '[data-slot="badge"]'
+    )
+    assert.ok(stateBadge)
+    assert.match(stateBadge.className, /max-w-full/)
+    assert.match(stateBadge.className, /sm:max-w-\[55%\]/)
+
+    const cardFooter = card.querySelector<HTMLElement>('footer')
+    assert.ok(cardFooter)
+    assert.match(cardFooter.className, /grid-cols-1/)
+    assert.match(cardFooter.className, /sm:grid-cols-2/)
 
     const buttons = card.querySelectorAll<HTMLButtonElement>(
       '[data-testid="status-segment"]'
@@ -351,7 +369,10 @@ describe('public probe status page', () => {
 
     await rendered.rerender({ data: statusData, isFetching: true })
     assert.equal(refresh.disabled, true)
-    assert.match(refresh.querySelector('svg')?.getAttribute('class') ?? '', /animate-spin/)
+    assert.match(
+      refresh.querySelector('svg')?.getAttribute('class') ?? '',
+      /animate-spin/
+    )
     await rendered.cleanup()
   })
 

@@ -126,11 +126,11 @@ export function GroupStatusRow({
 
   return (
     <article
-      className='border-border bg-card grid min-h-[22rem] grid-rows-[auto_auto_auto_1fr_auto] gap-5 rounded-lg border p-5'
+      className='border-border bg-card grid min-h-[22rem] w-full min-w-0 grid-rows-[auto_auto_auto_1fr_auto] gap-5 rounded-lg border p-5'
       data-state={target.state}
       data-testid='target-status-card'
     >
-      <header className='flex min-w-0 items-start justify-between gap-3'>
+      <header className='flex min-w-0 flex-col items-start gap-3 sm:flex-row sm:justify-between'>
         <div className='min-w-0'>
           <h2
             className='truncate text-base font-semibold'
@@ -147,11 +147,16 @@ export function GroupStatusRow({
         </div>
         <Badge
           variant='outline'
-          className={cn('h-6 max-w-[55%] gap-1', presentation.badgeClassName)}
+          className={cn(
+            'h-6 max-w-full self-start gap-1 whitespace-normal sm:max-w-[55%] sm:whitespace-nowrap',
+            presentation.badgeClassName
+          )}
           title={t(presentation.label)}
         >
           <StateIcon className='shrink-0' aria-hidden='true' />
-          <span className='truncate'>{t(presentation.label)}</span>
+          <span className='break-words sm:truncate'>
+            {t(presentation.label)}
+          </span>
         </Badge>
       </header>
 
@@ -194,16 +199,16 @@ export function GroupStatusRow({
         <StatusTimeline points={points} targetName={target.display_name} />
       </div>
 
-      <footer className='text-muted-foreground grid min-h-9 grid-cols-2 gap-3 border-t pt-3 text-xs'>
+      <footer className='text-muted-foreground grid min-h-9 grid-cols-1 gap-3 border-t pt-3 text-xs sm:grid-cols-2'>
         <div className='min-w-0'>
           <span className='block'>{t('Last checked')}</span>
-          <strong className='text-foreground mt-0.5 block truncate font-medium'>
+          <strong className='text-foreground mt-0.5 block font-medium break-words sm:truncate'>
             {latestUpdate ?? t('No observations yet')}
           </strong>
         </div>
-        <div className='min-w-0 text-right'>
+        <div className='min-w-0 sm:text-right'>
           <span className='block'>{t('Next check')}</span>
-          <strong className='text-foreground mt-0.5 block truncate font-medium'>
+          <strong className='text-foreground mt-0.5 block font-medium break-words sm:truncate'>
             {nextUpdate ?? '--'}
           </strong>
         </div>
