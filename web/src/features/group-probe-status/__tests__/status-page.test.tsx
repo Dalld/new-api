@@ -21,7 +21,7 @@ import { after, describe, test } from 'node:test'
 
 import { Window } from 'happy-dom'
 
-import type { PublicGroupProbeStatus } from '../types'
+import type { PublicProbeData, PublicProbePoint } from '../types'
 
 const domWindow = new Window()
 const domGlobals = [
@@ -34,6 +34,10 @@ const domGlobals = [
   'Node',
   'Element',
   'Event',
+  'MouseEvent',
+  'PointerEvent',
+  'KeyboardEvent',
+  'FocusEvent',
   'CustomEvent',
   'MutationObserver',
   'ResizeObserver',
@@ -68,32 +72,42 @@ const reactTestGlobals = globalThis as typeof globalThis & {
 reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
 const generatedAt = 2_000_001_600
-const buckets = Array.from({ length: 144 }, (_, index) => ({
-  startedAt: generatedAt - (143 - index) * 600,
-  state: index < 46 ? ('healthy' as const) : ('degraded' as const),
-  sampleCount: 1,
-}))
+const failedPoint: PublicProbePoint = {
+  checked_at: generatedAt - 60,
+  state: 'validation_failed',
+  ping_latency_ms: 218,
+  chat_latency_ms: null,
+  error_code: 'validation_failed',
+}
+const operationalPoint: PublicProbePoint = {
+  checked_at: generatedAt,
+  state: 'operational',
+  ping_latency_ms: 96,
+  chat_latency_ms: 842,
+  error_code: null,
+}
 
-const healthyData: PublicGroupProbeStatus = {
-  generatedAt,
-  groups: [
+const statusData: PublicProbeData = {
+  generated_at: generatedAt,
+  interval_seconds: 60,
+  targets: [
     {
+      key: 'codex-gpt-5-5',
       group: 'codex',
-      displayName: 'Codex',
+      display_name: 'Codex',
       model: 'gpt-5.5',
-      state: 'healthy',
-      availability: 0.975,
-      averageLatencyMs: 821.4,
-      sampleCount: 41,
-      latestCheckedAt: generatedAt - 30,
-      stale: false,
-      intervalMinutes: 10,
-      buckets,
+      state: 'operational',
+      availability: 0.5,
+      ping_latency_ms: 96,
+      chat_latency_ms: 842,
+      latest_checked_at: generatedAt,
+      next_check_at: generatedAt + 60,
+      history: [failedPoint, operationalPoint],
     },
   ],
 }
-const healthyGroup = healthyData.groups[0]
-assert.ok(healthyGroup)
+const primaryTarget = statusData.targets[0]
+assert.ok(primaryTarget)
 
 function Harness(props: Parameters<typeof GroupProbeStatusContent>[0]) {
   return (
@@ -134,89 +148,287 @@ async function renderStatus(
   }
 }
 
-describe('public group probe status page', () => {
+function getPointButton(container: HTMLElement, pointId: string) {
+  const button = container.querySelector<HTMLButtonElement>(
+    `[data-point-id="${pointId}"]`
+  )
+  assert.ok(button)
+  return button
+}
+
+function getOpenDetail() {
+  return document.body.querySelector<HTMLElement>(
+    '[data-testid="probe-point-detail"]'
+  )
+}
+
+function getAggregateText(container: HTMLElement) {
+  return (
+    container.querySelector('[data-testid="aggregate-status"]')?.textContent ??
+    ''
+  )
+}
+
+async function wait(milliseconds: number) {
+  await act(
+    () => new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
+  )
+}
+
+describe('public probe status page', () => {
   after(() => domWindow.close())
 
-  test('renders loading, error, and empty states', async () => {
+  test('keeps loading, error, empty, and partial states in a stable shell', async () => {
     const loading = await renderStatus({ isPending: true })
     assert.ok(loading.container.querySelector('[aria-label="Loading status"]'))
+    assert.ok(loading.container.querySelector('[data-layout="stable"]'))
     await loading.cleanup()
 
     const error = await renderStatus({ isError: true })
     assert.match(error.container.textContent ?? '', /temporarily unavailable/i)
-    assert.equal(
-      error.container.textContent?.includes('No public probe groups'),
-      false
-    )
+    assert.ok(error.container.querySelector('[data-layout="stable"]'))
     await error.cleanup()
 
-    const empty = await renderStatus({ data: { generatedAt, groups: [] } })
-    assert.match(empty.container.textContent ?? '', /No public probe groups/i)
+    const empty = await renderStatus({
+      data: { ...statusData, targets: [] },
+    })
+    assert.match(empty.container.textContent ?? '', /No probe targets/i)
+    assert.ok(empty.container.querySelector('[data-layout="stable"]'))
     await empty.cleanup()
+
+    const partial = await renderStatus({
+      data: {
+        ...statusData,
+        targets: [
+          primaryTarget,
+          {
+            ...primaryTarget,
+            key: 'gemini-flash',
+            display_name: 'Gemini',
+            state: 'unknown',
+            availability: null,
+            latest_checked_at: null,
+            history: [],
+          },
+        ],
+      },
+    })
+    assert.match(partial.container.textContent ?? '', /Collecting data/i)
+    assert.equal(
+      partial.container.querySelectorAll('[data-testid="target-status-card"]')
+        .length,
+      2
+    )
+    await partial.cleanup()
+
+    const unknown = await renderStatus({
+      data: {
+        ...statusData,
+        targets: [
+          {
+            ...primaryTarget,
+            state: 'unknown',
+          },
+        ],
+      },
+    })
+    assert.match(
+      unknown.container.querySelector('[data-testid="aggregate-status"]')
+        ?.textContent ?? '',
+      /Collecting data/i
+    )
+    await unknown.cleanup()
   })
 
-  test('renders text-equivalent state, metrics, and the backend bucket count', async () => {
-    const rendered = await renderStatus({ data: healthyData })
-    const row = rendered.container.querySelector(
-      '[data-testid="group-status-row"]'
-    )
-    assert.ok(row)
-    assert.equal(row.getAttribute('data-state'), 'healthy')
-    assert.match(row.textContent ?? '', /Healthy/)
-    assert.match(row.textContent ?? '', /97\.5%/)
-    assert.match(row.textContent ?? '', /821 ms/)
-    assert.equal(row.querySelectorAll('[tabindex="0"]').length, 144)
-    assert.ok(row.querySelector('[data-testid="status-timeline-scroll"]'))
-    const grid = row.querySelector<HTMLElement>(
-      '[data-testid="status-timeline-grid"]'
+  test('renders responsive target cards with dual latency, availability, and exactly 60 buttons', async () => {
+    const rendered = await renderStatus({ data: statusData })
+    const grid = rendered.container.querySelector<HTMLElement>(
+      '[data-testid="status-target-grid"]'
     )
     assert.ok(grid)
-    assert.match(grid.style.gridTemplateColumns, /repeat\(144,/)
-    assert.equal(grid.style.minWidth, '1724px')
+    assert.match(grid.className, /md:grid-cols-2/)
+    assert.match(grid.className, /xl:grid-cols-3/)
+
+    const card = grid.querySelector<HTMLElement>(
+      '[data-testid="target-status-card"]'
+    )
+    assert.ok(card)
+    assert.match(card.textContent ?? '', /Conversation latency/i)
+    assert.match(card.textContent ?? '', /842 ms/)
+    assert.match(card.textContent ?? '', /Ping latency/i)
+    assert.match(card.textContent ?? '', /96 ms/)
+    assert.match(card.textContent ?? '', /Last 60 availability/i)
+    assert.match(card.textContent ?? '', /50\.0%/)
+
+    const buttons = card.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="status-segment"]'
+    )
+    assert.equal(buttons.length, 60)
+    assert.ok([...buttons].every((button) => button.tabIndex === 0))
+    assert.ok(
+      [...buttons].every(
+        (button) => (button.getAttribute('aria-label') ?? '').length > 10
+      )
+    )
     await rendered.cleanup()
   })
 
-  test('renders 5, 30, and 60 minute timelines without forcing 48 buckets', async () => {
-    for (const [intervalMinutes, bucketCount] of [
-      [5, 288],
-      [30, 48],
-      [60, 24],
-    ] as const) {
-      const variableBuckets = Array.from(
-        { length: bucketCount },
-        (_, index) => ({
-          startedAt:
-            generatedAt - (bucketCount - 1 - index) * intervalMinutes * 60,
-          state: 'healthy' as const,
-          sampleCount: 1,
-        })
-      )
-      const rendered = await renderStatus({
+  test('derives aggregate status from fresh, stale, and mixed targets', async () => {
+    const scenarios: Array<{
+      label: RegExp
+      data: PublicProbeData
+    }> = [
+      { label: /All systems operational/i, data: statusData },
+      {
+        label: /Degraded performance/i,
         data: {
-          generatedAt,
-          groups: [
+          ...statusData,
+          targets: [{ ...primaryTarget, state: 'degraded' }],
+        },
+      },
+      {
+        label: /Service unavailable/i,
+        data: {
+          ...statusData,
+          targets: [{ ...primaryTarget, state: 'failed' }],
+        },
+      },
+      {
+        label: /Partial outage/i,
+        data: {
+          ...statusData,
+          targets: [
+            primaryTarget,
+            { ...primaryTarget, key: 'failed-target', state: 'failed' },
+          ],
+        },
+      },
+      {
+        label: /Status data is stale/i,
+        data: { ...statusData, generated_at: generatedAt + 121 },
+      },
+      {
+        label: /Collecting data/i,
+        data: {
+          ...statusData,
+          targets: [
             {
-              ...healthyGroup,
-              intervalMinutes,
-              buckets: variableBuckets,
+              ...primaryTarget,
+              state: 'unknown',
+              availability: null,
+              ping_latency_ms: null,
+              chat_latency_ms: null,
+              latest_checked_at: null,
+              history: [],
             },
           ],
         },
-      })
-      const grid = rendered.container.querySelector<HTMLElement>(
-        '[data-testid="status-timeline-grid"]'
-      )
-      assert.ok(grid)
-      assert.equal(grid.querySelectorAll('[tabindex="0"]').length, bucketCount)
-      assert.match(
-        grid.style.gridTemplateColumns,
-        new RegExp(`repeat\\(${bucketCount},`)
-      )
+      },
+    ]
+
+    for (const scenario of scenarios) {
+      const rendered = await renderStatus({ data: scenario.data })
+      assert.match(getAggregateText(rendered.container), scenario.label)
       await rendered.cleanup()
     }
   })
 
-  test('opens at the current result without overriding later user scrolling', async () => {
+  test('refreshes on demand and disables the control while fetching', async () => {
+    let refreshes = 0
+    const rendered = await renderStatus({
+      data: statusData,
+      refetch: () => {
+        refreshes++
+      },
+    })
+    const refresh = rendered.container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh status"]'
+    )
+    assert.ok(refresh)
+
+    await act(async () => refresh.click())
+    assert.equal(refreshes, 1)
+
+    await rendered.rerender({ data: statusData, isFetching: true })
+    assert.equal(refresh.disabled, true)
+    assert.match(refresh.querySelector('svg')?.getAttribute('class') ?? '', /animate-spin/)
+    await rendered.cleanup()
+  })
+
+  test('opens sanitized point details after a 100ms mouse hover', async () => {
+    const rendered = await renderStatus({ data: statusData })
+    const button = getPointButton(
+      rendered.container,
+      `codex-gpt-5-5:${failedPoint.checked_at}`
+    )
+
+    await act(async () =>
+      button.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    )
+    await wait(70)
+    assert.equal(getOpenDetail(), null)
+    await wait(50)
+
+    const detail = getOpenDetail()
+    assert.ok(detail)
+    assert.equal(button.dataset.pointState, 'validation_failed')
+    assert.match(detail.textContent ?? '', /Validation failed/i)
+    assert.match(detail.textContent ?? '', /Conversation latency/i)
+    assert.match(detail.textContent ?? '', /Ping latency/i)
+    assert.match(detail.textContent ?? '', /218 ms/)
+    assert.match(detail.textContent ?? '', /Response validation failed/i)
+    assert.equal(detail.textContent?.includes('validation_failed'), false)
+    await rendered.cleanup()
+  })
+
+  test('supports focus, Enter, Escape, touch tap, and outside dismissal', async () => {
+    const rendered = await renderStatus({ data: statusData })
+    const button = getPointButton(
+      rendered.container,
+      `codex-gpt-5-5:${operationalPoint.checked_at}`
+    )
+
+    await act(async () => button.focus())
+    assert.ok(getOpenDetail())
+    await act(async () =>
+      button.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+      )
+    )
+    assert.equal(getOpenDetail(), null)
+
+    await act(async () =>
+      button.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+      )
+    )
+    assert.ok(getOpenDetail())
+    await act(async () =>
+      button.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+      )
+    )
+
+    await act(async () => {
+      button.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          pointerType: 'touch',
+        })
+      )
+      button.click()
+    })
+    assert.ok(getOpenDetail())
+    await act(async () =>
+      document.body.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' })
+      )
+    )
+    assert.equal(getOpenDetail(), null)
+    await rendered.cleanup()
+  })
+
+  test('preserves an active point, focus, and horizontal scroll across refresh', async () => {
     const prototype = domWindow.HTMLElement.prototype
     const originalScrollWidth = Object.getOwnPropertyDescriptor(
       prototype,
@@ -228,37 +440,44 @@ describe('public group probe status page', () => {
     )
     Object.defineProperty(prototype, 'scrollWidth', {
       configurable: true,
-      get: () => 1800,
+      get: () => 900,
     })
     Object.defineProperty(prototype, 'clientWidth', {
       configurable: true,
-      get: () => 600,
+      get: () => 420,
     })
 
     let rendered: Awaited<ReturnType<typeof renderStatus>> | undefined
     try {
-      rendered = await renderStatus({ data: healthyData })
+      rendered = await renderStatus({ data: statusData })
       const timeline = rendered.container.querySelector<HTMLElement>(
         '[data-testid="status-timeline-scroll"]'
       )
       assert.ok(timeline)
-      assert.equal(timeline.scrollLeft, 1200)
+      assert.equal(timeline.scrollLeft, 480)
 
-      timeline.scrollLeft = 320
+      timeline.scrollLeft = 190
       timeline.dispatchEvent(new Event('scroll'))
+      const pointId = `codex-gpt-5-5:${operationalPoint.checked_at}`
+      const button = getPointButton(rendered.container, pointId)
+      await act(async () => button.focus())
+      assert.ok(getOpenDetail())
+
       await rendered.rerender({
         data: {
-          ...healthyData,
-          generatedAt: generatedAt + 30,
-          groups: [
-            {
-              ...healthyGroup,
-              buckets: healthyGroup.buckets.map((bucket) => ({ ...bucket })),
-            },
-          ],
+          ...statusData,
+          generated_at: generatedAt + 15,
+          targets: statusData.targets.map((target) => ({
+            ...target,
+            history: target.history.map((point) => ({ ...point })),
+          })),
         },
       })
-      assert.equal(timeline.scrollLeft, 320)
+
+      const refreshedButton = getPointButton(rendered.container, pointId)
+      assert.equal(document.activeElement, refreshedButton)
+      assert.equal(timeline.scrollLeft, 190)
+      assert.ok(getOpenDetail())
     } finally {
       await rendered?.cleanup()
       if (originalScrollWidth) {
@@ -274,45 +493,42 @@ describe('public group probe status page', () => {
     }
   })
 
-  test('distinguishes stale and partial data notices', async () => {
+  test('shows stale and mixed fresh failures without exposing private details', async () => {
     const stale = await renderStatus({
       data: {
-        ...healthyData,
-        groups: [{ ...healthyGroup, stale: true }],
+        ...statusData,
+        generated_at: generatedAt + 121,
       },
     })
-    assert.match(stale.container.textContent ?? '', /Some results are stale/)
+    assert.match(stale.container.textContent ?? '', /Status data is stale/i)
     await stale.cleanup()
 
     const partial = await renderStatus({
       data: {
-        ...healthyData,
-        groups: [
+        ...statusData,
+        targets: [
+          primaryTarget,
           {
-            ...healthyGroup,
-            state: 'unknown',
-            sampleCount: 1,
+            ...primaryTarget,
+            key: 'anthropic-sonnet',
+            display_name: 'Anthropic',
+            state: 'failed',
+            latest_checked_at: generatedAt,
+            history: [failedPoint],
           },
         ],
       },
     })
-    assert.match(partial.container.textContent ?? '', /Partial history/)
-    assert.match(partial.container.textContent ?? '', /Unknown/)
-    await partial.cleanup()
-  })
-
-  test('does not render protected backend details', async () => {
-    const rendered = await renderStatus({ data: healthyData })
-    const text = rendered.container.textContent ?? ''
-    for (const protectedTerm of [
+    assert.match(partial.container.textContent ?? '', /Partial outage/i)
+    const text = partial.container.textContent?.toLowerCase() ?? ''
+    for (const privateTerm of [
       'channel_id',
-      'channel name',
-      'task_id',
-      'error_message',
-      'api key',
+      'base_url',
+      'provider key',
+      'stack trace',
     ]) {
-      assert.equal(text.toLowerCase().includes(protectedTerm), false)
+      assert.equal(text.includes(privateTerm), false)
     }
-    await rendered.cleanup()
+    await partial.cleanup()
   })
 })

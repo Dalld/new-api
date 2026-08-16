@@ -16,7 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-
 export const PUBLIC_PROBE_STATES = [
   'operational',
   'degraded',
@@ -26,6 +25,15 @@ export const PUBLIC_PROBE_STATES = [
 ] as const
 
 export type PublicProbeState = (typeof PUBLIC_PROBE_STATES)[number]
+
+export const PUBLIC_PROBE_RESULT_STATES = [
+  'operational',
+  'degraded',
+  'validation_failed',
+  'failed',
+] as const
+
+export type PublicProbeResultState = (typeof PUBLIC_PROBE_RESULT_STATES)[number]
 
 export const PUBLIC_PROBE_ERROR_CODES = [
   'unsupported_provider',
@@ -42,7 +50,7 @@ export type PublicProbeErrorCode = (typeof PUBLIC_PROBE_ERROR_CODES)[number]
 
 export type PublicProbePoint = {
   checked_at: number
-  state: PublicProbeState
+  state: PublicProbeResultState
   ping_latency_ms: number | null
   chat_latency_ms: number | null
   error_code: PublicProbeErrorCode | null

@@ -24,6 +24,7 @@ import { api } from '@/lib/api'
 import { normalizeProbeHistory } from './history'
 import {
   PUBLIC_PROBE_ERROR_CODES,
+  PUBLIC_PROBE_RESULT_STATES,
   PUBLIC_PROBE_STATES,
   type PublicProbeData,
 } from './types'
@@ -31,6 +32,7 @@ import {
 const unixTimestampSchema = z.number().int().positive()
 const nullableLatencySchema = z.number().int().nonnegative().nullable()
 const stateSchema = z.enum(PUBLIC_PROBE_STATES)
+const resultStateSchema = z.enum(PUBLIC_PROBE_RESULT_STATES)
 const errorCodeSchema = z.enum(PUBLIC_PROBE_ERROR_CODES).nullable()
 
 function boundedIdentifierSchema(maxCodePoints: number) {
@@ -44,7 +46,7 @@ function boundedIdentifierSchema(maxCodePoints: number) {
 const probePointSchema = z
   .object({
     checked_at: unixTimestampSchema,
-    state: stateSchema,
+    state: resultStateSchema,
     ping_latency_ms: nullableLatencySchema,
     chat_latency_ms: nullableLatencySchema,
     error_code: errorCodeSchema,
@@ -66,6 +68,55 @@ const probeTargetSchema = z
     history: z.array(probePointSchema).max(60),
   })
   .strict()
+  .superRefine((target, context) => {
+    if (target.history.length === 0) {
+      if (
+        target.state !== 'unknown' ||
+        target.availability !== null ||
+        target.ping_latency_ms !== null ||
+        target.chat_latency_ms !== null ||
+        target.latest_checked_at !== null
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'probe target without history cannot include a summary',
+        })
+      }
+      return
+    }
+
+    const latest = target.history.reduce((current, point) =>
+      point.checked_at >= current.checked_at ? point : current
+    )
+    const expectedAvailability =
+      target.history.filter(
+        ({ state }) => state === 'operational' || state === 'degraded'
+      ).length / target.history.length
+
+    if (
+      target.state === 'unknown' ||
+      target.availability === null ||
+      target.latest_checked_at === null
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'probe target with history requires a complete summary',
+      })
+      return
+    }
+    if (
+      target.state !== latest.state ||
+      target.latest_checked_at !== latest.checked_at ||
+      target.ping_latency_ms !== latest.ping_latency_ms ||
+      target.chat_latency_ms !== latest.chat_latency_ms ||
+      Math.abs(target.availability - expectedAvailability) > Number.EPSILON
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'probe target summary does not match its history',
+      })
+    }
+  })
 
 const probeTargetsSchema = z
   .array(probeTargetSchema)

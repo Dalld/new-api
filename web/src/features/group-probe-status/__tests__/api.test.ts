@@ -52,6 +52,11 @@ const { normalizeProbeHistory, padProbeHistory } = await import('../history')
 
 const generatedAt = 2_000_001_600
 
+function required<T>(value: T | undefined): T {
+  assert.ok(value !== undefined)
+  return value
+}
+
 function point(
   checkedAt: number,
   overrides: Partial<PublicProbePoint> = {}
@@ -69,6 +74,12 @@ function point(
 function response(
   history: PublicProbePoint[] = [point(generatedAt - 30)]
 ): PublicProbeResponse {
+  const latest = [...history]
+    .sort((left, right) => left.checked_at - right.checked_at)
+    .at(-1)
+  const available = history.filter(
+    ({ state }) => state === 'operational' || state === 'degraded'
+  ).length
   return {
     success: true,
     data: {
@@ -80,11 +91,11 @@ function response(
           group: 'codex',
           display_name: 'Codex',
           model: 'gpt-5.5',
-          state: 'operational',
-          availability: 1,
-          ping_latency_ms: 123,
-          chat_latency_ms: 456,
-          latest_checked_at: generatedAt - 30,
+          state: latest?.state ?? 'unknown',
+          availability: latest ? available / history.length : null,
+          ping_latency_ms: latest?.ping_latency_ms ?? null,
+          chat_latency_ms: latest?.chat_latency_ms ?? null,
+          latest_checked_at: latest?.checked_at ?? null,
           next_check_at: generatedAt + 60,
           history,
         },
@@ -94,17 +105,13 @@ function response(
 }
 
 describe('public probe API', () => {
-  test('decodes every public state and nullable dual latencies', () => {
+  test('decodes every completed state, unknown summaries, and nullable dual latencies', () => {
     const input = response([
       point(generatedAt - 60, {
         state: 'degraded',
         ping_latency_ms: null,
       }),
-      point(generatedAt, {
-        state: 'unknown',
-        chat_latency_ms: null,
-        error_code: 'timeout',
-      }),
+      point(generatedAt, { chat_latency_ms: null }),
       point(generatedAt + 60, {
         state: 'validation_failed',
         error_code: 'validation_failed',
@@ -116,18 +123,15 @@ describe('public probe API', () => {
         error_code: 'network_error',
       }),
     ])
-    input.data.targets[0]!.state = 'validation_failed'
-    input.data.targets[0]!.availability = null
-    input.data.targets[0]!.ping_latency_ms = null
-    input.data.targets[0]!.chat_latency_ms = null
-    input.data.targets[0]!.latest_checked_at = null
-
     assert.deepEqual(parsePublicProbeStatus(input), input.data)
+    const empty = response([])
+    assert.deepEqual(parsePublicProbeStatus(empty), empty.data)
   })
 
   test('rejects unsuccessful, legacy, extra-field, and malformed responses', () => {
+    const validTarget = required(response().data.targets[0])
     const missingKeyTarget: Partial<PublicProbeTarget> = {
-      ...response().data.targets[0]!,
+      ...validTarget,
     }
     delete missingKeyTarget.key
 
@@ -144,21 +148,21 @@ describe('public probe API', () => {
         ...response(),
         data: {
           ...response().data,
-          targets: [{ ...response().data.targets[0], state: 'healthy' }],
+          targets: [{ ...validTarget, state: 'healthy' }],
         },
       },
       {
         ...response(),
         data: {
           ...response().data,
-          targets: [{ ...response().data.targets[0], ping_latency_ms: -1 }],
+          targets: [{ ...validTarget, ping_latency_ms: -1 }],
         },
       },
       {
         ...response(),
         data: {
           ...response().data,
-          targets: [{ ...response().data.targets[0], availability: 1.01 }],
+          targets: [{ ...validTarget, availability: 1.01 }],
         },
       },
       {
@@ -167,7 +171,7 @@ describe('public probe API', () => {
           ...response().data,
           targets: [
             {
-              ...response().data.targets[0],
+              ...validTarget,
               history: [point(-1)],
             },
           ],
@@ -179,7 +183,7 @@ describe('public probe API', () => {
           ...response().data,
           targets: [
             {
-              ...response().data.targets[0],
+              ...validTarget,
               history: [
                 { ...point(generatedAt), error_code: 'raw_provider_error' },
               ],
@@ -191,7 +195,7 @@ describe('public probe API', () => {
         ...response(),
         data: {
           ...response().data,
-          targets: [{ ...response().data.targets[0], channel_id: 42 }],
+          targets: [{ ...validTarget, channel_id: 42 }],
         },
       },
       {
@@ -200,7 +204,7 @@ describe('public probe API', () => {
           ...response().data,
           targets: [
             {
-              ...response().data.targets[0],
+              ...validTarget,
               history: [{ ...point(generatedAt), api_key: 'secret' }],
             },
           ],
@@ -210,14 +214,14 @@ describe('public probe API', () => {
         ...response(),
         data: {
           ...response().data,
-          targets: [{ ...response().data.targets[0], key: ' padded-key ' }],
+          targets: [{ ...validTarget, key: ' padded-key ' }],
         },
       },
       {
         ...response(),
         data: {
           ...response().data,
-          targets: [{ ...response().data.targets[0], key: 'k'.repeat(97) }],
+          targets: [{ ...validTarget, key: 'k'.repeat(97) }],
         },
       },
       {
@@ -228,14 +232,87 @@ describe('public probe API', () => {
         ...response(),
         data: {
           ...response().data,
-          targets: [{ ...response().data.targets[0], history: {} }],
+          targets: [{ ...validTarget, history: {} }],
         },
       },
       {
         ...response(),
         data: {
           ...response().data,
-          targets: Array.from({ length: 21 }, () => response().data.targets[0]),
+          targets: [
+            {
+              ...validTarget,
+              history: [{ ...point(generatedAt), state: 'unknown' }],
+            },
+          ],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [{ ...validTarget, history: [] }],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [
+            {
+              ...validTarget,
+              state: 'unknown',
+              availability: null,
+              latest_checked_at: null,
+            },
+          ],
+        },
+      },
+      {
+        ...response([]),
+        data: {
+          ...response([]).data,
+          targets: [
+            {
+              ...required(response([]).data.targets[0]),
+              state: 'operational',
+            },
+          ],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [{ ...validTarget, state: 'failed' }],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [{ ...validTarget, latest_checked_at: generatedAt - 1 }],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [{ ...validTarget, chat_latency_ms: null }],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: [{ ...validTarget, availability: 0 }],
+        },
+      },
+      {
+        ...response(),
+        data: {
+          ...response().data,
+          targets: Array.from({ length: 21 }, () => validTarget),
         },
       },
       response(
@@ -257,10 +334,7 @@ describe('public probe API', () => {
         ...response(),
         data: {
           ...response().data,
-          targets: [
-            response().data.targets[0],
-            { ...response().data.targets[0] },
-          ],
+          targets: [validTarget, { ...validTarget }],
         },
       },
     ]
@@ -277,8 +351,8 @@ describe('public probe API', () => {
     const parsedHistory = normalizeProbeHistory(history)
 
     assert.equal(parsedHistory.length, 60)
-    assert.equal(parsedHistory[0]!.checked_at, generatedAt + 5)
-    assert.equal(parsedHistory.at(-1)!.checked_at, generatedAt + 64)
+    assert.equal(required(parsedHistory[0]).checked_at, generatedAt + 5)
+    assert.equal(required(parsedHistory.at(-1)).checked_at, generatedAt + 64)
   })
 
   test('keeps the last input item for duplicate checked_at values', () => {
@@ -298,13 +372,13 @@ describe('public probe API', () => {
       'codex-gpt-5-5'
     )
     assert.equal(padded.length, 60)
-    assert.equal(padded.at(-1)!.id, `codex-gpt-5-5:${generatedAt}`)
-    assert.equal(padded.at(-1)!.state, 'validation_failed')
+    assert.equal(required(padded.at(-1)).id, `codex-gpt-5-5:${generatedAt}`)
+    assert.equal(required(padded.at(-1)).state, 'validation_failed')
   })
 
   test('accepts empty and exactly 60-point API histories', () => {
     assert.deepEqual(
-      parsePublicProbeStatus(response([])).targets[0]!.history,
+      required(parsePublicProbeStatus(response([])).targets[0]).history,
       []
     )
 
@@ -312,12 +386,10 @@ describe('public probe API', () => {
       point(generatedAt + index)
     ).reverse()
     const parsed = parsePublicProbeStatus(response(exactHistory))
-    assert.equal(parsed.targets[0]!.history.length, 60)
-    assert.equal(parsed.targets[0]!.history[0]!.checked_at, generatedAt)
-    assert.equal(
-      parsed.targets[0]!.history.at(-1)!.checked_at,
-      generatedAt + 59
-    )
+    const parsedHistory = required(parsed.targets[0]).history
+    assert.equal(parsedHistory.length, 60)
+    assert.equal(required(parsedHistory[0]).checked_at, generatedAt)
+    assert.equal(required(parsedHistory.at(-1)).checked_at, generatedAt + 59)
   })
 
   test('left-pads short history to exactly 60 points', () => {
@@ -328,10 +400,10 @@ describe('public probe API', () => {
     )
 
     assert.equal(padded.length, 60)
-    assert.equal(padded[0]!.placeholder, true)
-    assert.equal(padded[57]!.id, 'codex-gpt-5-5:placeholder:57')
-    assert.equal(padded[58]!.checked_at, generatedAt - 60)
-    assert.equal(padded.at(-1)!.checked_at, latest.checked_at)
+    assert.equal(required(padded[0]).placeholder, true)
+    assert.equal(required(padded[57]).id, 'codex-gpt-5-5:placeholder:57')
+    assert.equal(required(padded[58]).checked_at, generatedAt - 60)
+    assert.equal(required(padded.at(-1)).checked_at, latest.checked_at)
   })
 
   test('uses stable target-and-time IDs for real points and fixed slot IDs for placeholders', () => {
@@ -348,14 +420,14 @@ describe('public probe API', () => {
       first.map(({ id }) => id),
       repeated.map(({ id }) => id)
     )
-    assert.equal(first.at(-1)!.id, `${targetKey}:${generatedAt}`)
-    assert.equal(advanced[0]!.id, `${targetKey}:placeholder:0`)
+    assert.equal(required(first.at(-1)).id, `${targetKey}:${generatedAt}`)
+    assert.equal(required(advanced[0]).id, `${targetKey}:placeholder:0`)
     assert.equal(
-      advanced[56]!.id,
-      first[56]!.id,
+      required(advanced[56]).id,
+      required(first[56]).id,
       'surviving placeholder slots retain their identity'
     )
-    assert.equal(advanced.at(-2)!.id, first.at(-1)!.id)
+    assert.equal(required(advanced.at(-2)).id, required(first.at(-1)).id)
   })
 
   test('uses the public endpoint, request options, query cadence, and retry policy', async () => {
