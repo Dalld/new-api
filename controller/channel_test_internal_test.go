@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,26 +16,77 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestChannelTestOptionsPreserveExistingBehaviorByDefault(t *testing.T) {
-	options := defaultChannelTestOptions()
+func TestChannelRecordsModelTestConsumeLog(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Log{}))
 
-	assert.Empty(t, options.UsingGroup)
-	assert.True(t, options.RecordConsumeLog)
-	assert.True(t, options.LogDetails)
-}
+	originalLogConsumeEnabled := common.LogConsumeEnabled
+	originalDataExportEnabled := common.DataExportEnabled
+	originalModelRatios := ratio_setting.ModelRatio2JSONString()
+	originalCompletionRatios := ratio_setting.CompletionRatio2JSONString()
+	originalGroupRatios := ratio_setting.GroupRatio2JSONString()
+	t.Cleanup(func() {
+		common.LogConsumeEnabled = originalLogConsumeEnabled
+		common.DataExportEnabled = originalDataExportEnabled
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(originalModelRatios))
+		require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(originalCompletionRatios))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalGroupRatios))
+	})
+	common.LogConsumeEnabled = true
+	common.DataExportEnabled = false
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"channel-log-test-model":1}`))
+	require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(`{"channel-log-test-model":1}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
 
-func TestGroupProbeChannelTestOptionsDisablePersistentSideEffects(t *testing.T) {
-	options := groupProbeChannelTestOptions("  codex  ")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/v1/chat/completions", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, err := w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"channel-log-test-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`))
+		assert.NoError(t, err)
+	}))
+	t.Cleanup(upstream.Close)
 
-	assert.Equal(t, "codex", options.UsingGroup)
-	assert.False(t, options.RecordConsumeLog)
-	assert.False(t, options.LogDetails)
+	user := &model.User{
+		Username: "channel-log-test-user",
+		Password: "password123",
+		Role:     common.RoleRootUser,
+		Status:   common.UserStatusEnabled,
+		Group:    "default",
+		Quota:    1_000_000,
+	}
+	require.NoError(t, db.Create(user).Error)
+	baseURL := upstream.URL
+	channel := &model.Channel{
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "channel-log-test-key",
+		Status:  common.ChannelStatusEnabled,
+		Name:    "channel log test",
+		BaseURL: &baseURL,
+		Models:  "channel-log-test-model",
+		Group:   "default",
+	}
+	require.NoError(t, db.Create(channel).Error)
+
+	result := testChannel(context.Background(), channel, user.Id, "channel-log-test-model", "", false)
+
+	require.NoError(t, result.localErr)
+	require.Nil(t, result.newAPIError)
+	var consumeLog model.Log
+	require.NoError(t, db.Where(&model.Log{
+		Type:      model.LogTypeConsume,
+		UserId:    user.Id,
+		ChannelId: channel.Id,
+	}).First(&consumeLog).Error)
+	assert.Equal(t, "模型测试", consumeLog.TokenName)
+	assert.Equal(t, "模型测试", consumeLog.Content)
 }
 
 func TestValidateChannelProxy(t *testing.T) {

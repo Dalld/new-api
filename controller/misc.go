@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -39,6 +40,17 @@ func TestStatus(c *gin.Context) {
 		"http_stats": httpStats,
 	})
 	return
+}
+
+// GetPublicStatusProbes keeps the public route available until the isolated
+// status probe controller replaces this placeholder.
+func GetPublicStatusProbes(c *gin.Context) {
+	c.Header("Cache-Control", "public, max-age=15")
+	common.ApiSuccess(c, gin.H{
+		"generated_at":     time.Now().Unix(),
+		"interval_minutes": 10,
+		"groups":           []any{},
+	})
 }
 
 func GetStatus(c *gin.Context) {

@@ -25,7 +25,6 @@ import { PerformanceSection } from '../maintenance/performance-section'
 import { UpdateCheckerSection } from '../maintenance/update-checker-section'
 import type { OperationsSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
-import { GroupProbeSettingsSection } from './group-probe'
 
 const OPERATIONS_SECTIONS = [
   {
@@ -127,11 +126,6 @@ const OPERATIONS_SECTIONS = [
         }}
       />
     ),
-  },
-  {
-    id: 'group-probe',
-    titleKey: 'Group Probe',
-    build: () => <GroupProbeSettingsSection />,
   },
   {
     id: 'update-checker',

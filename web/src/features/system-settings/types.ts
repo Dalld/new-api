@@ -365,36 +365,6 @@ export type OperationsSettings = {
   'perf_metrics_setting.retention_days': number
 }
 
-export type GroupProbeMapping = {
-  group: string
-  display_name: string
-  model: string
-  public: boolean
-}
-
-export type GroupProbeSettings = {
-  enabled: boolean
-  interval_minutes: number
-  retention_days: number
-  timeout_seconds: number
-  groups: GroupProbeMapping[]
-}
-
-export type GroupProbeSettingsResponse = {
-  success: boolean
-  message?: string
-  data?: GroupProbeSettings
-}
-
-export type GroupProbeRunResponse = {
-  success: boolean
-  message?: string
-  data?: {
-    task_id: string
-    created: boolean
-  }
-}
-
 export type SecuritySettings = {
   ModelRequestRateLimitEnabled: boolean
   ModelRequestRateLimitCount: number

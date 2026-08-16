@@ -34,21 +34,6 @@ func TestValidateOptionValueRejectsInvalidAffiliateCommissionRate(t *testing.T) 
 	require.NoError(t, validateOptionValue(affiliate_setting.OptionKey, "1"))
 }
 
-func TestValidateOptionValueRejectsInvalidGroupProbeConfig(t *testing.T) {
-	valid := `{"enabled":true,"interval_minutes":10,"retention_days":7,"timeout_seconds":45,"groups":[{"group":"codex","display_name":"Codex","model":"gpt-5.5","public":true}]}`
-	require.NoError(t, validateOptionValue("group_probe_setting.config", valid))
-
-	invalid := []string{
-		`{"enabled":true,"interval_minutes":4,"retention_days":7,"timeout_seconds":45,"groups":[]}`,
-		`{"enabled":true,"interval_minutes":10,"retention_days":7,"timeout_seconds":45,"groups":[{"group":"codex","display_name":"Codex","model":"","public":true}]}`,
-		`{"enabled":true,"interval_minutes":10,"retention_days":7,"timeout_seconds":45,"groups":[{"group":"codex","display_name":"Codex","model":"gpt-5.5"},{"group":"codex","display_name":"Other","model":"gpt-5.5"}]}`,
-		`not-json`,
-	}
-	for _, value := range invalid {
-		assert.Error(t, validateOptionValue("group_probe_setting.config", value))
-	}
-}
-
 func TestUpdateOptionDoesNotPublishWhenDatabaseWriteFails(t *testing.T) {
 	previousDB := DB
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})

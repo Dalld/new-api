@@ -11,7 +11,6 @@ import (
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/affiliate_setting"
 	"github.com/QuantumNous/new-api/setting/config"
-	"github.com/QuantumNous/new-api/setting/group_probe_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -234,10 +233,6 @@ func validateOptionValue(key string, value string) error {
 			return err
 		}
 		return affiliate_setting.ValidateRate(rate)
-	}
-	if key == group_probe_setting.OptionKey {
-		_, err := group_probe_setting.Decode(value, nil)
-		return err
 	}
 	return nil
 }
@@ -650,14 +645,6 @@ func handleConfigUpdate(key, value string) (bool, error) {
 		}
 		return true, affiliate_setting.SetRate(rate)
 	}
-	if key == group_probe_setting.OptionKey {
-		decoded, err := group_probe_setting.Decode(value, nil)
-		if err != nil {
-			return true, err
-		}
-		return true, group_probe_setting.SetSetting(decoded, nil)
-	}
-
 	parts := strings.SplitN(key, ".", 2)
 	if len(parts) != 2 {
 		return false, nil // 不是分层配置

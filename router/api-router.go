@@ -22,7 +22,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/setup", controller.GetSetup)
 		apiRouter.POST("/setup", anonymousRequestBodyLimit, controller.PostSetup)
 		apiRouter.GET("/status", controller.GetStatus)
-		apiRouter.GET("/status/probes", controller.GetPublicGroupProbeStatus)
+		apiRouter.GET("/status/probes", controller.GetPublicStatusProbes)
 		apiRouter.GET("/uptime/status", controller.GetUptimeKumaStatus)
 		apiRouter.GET("/models", middleware.UserAuth(), controller.DashboardListModels)
 		apiRouter.GET("/status/test", middleware.AdminAuth(), controller.TestStatus)
@@ -314,15 +314,6 @@ func SetApiRouter(router *gin.Engine) {
 		groupRoute.Use(middleware.AdminAuth())
 		{
 			groupRoute.GET("/", controller.GetGroups)
-		}
-
-		groupProbeRoute := apiRouter.Group("/group-probe")
-		groupProbeRoute.Use(middleware.AdminAuth())
-		{
-			groupProbeRoute.GET("/settings", controller.GetGroupProbeSettings)
-			groupProbeRoute.PUT("/settings", controller.UpdateGroupProbeSettings)
-			groupProbeRoute.POST("/run", middleware.CriticalRateLimit(), controller.RunGroupProbe)
-			groupProbeRoute.GET("/results", controller.GetGroupProbeResults)
 		}
 
 		affiliateRoute := apiRouter.Group("/affiliate")

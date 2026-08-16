@@ -42,7 +42,7 @@ func setupAffiliateBindRouteTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestGroupProbeRoutesAreRegistered(t *testing.T) {
+func TestPublicStatusAndAffiliateRoutesAreRegistered(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	SetApiRouter(engine)
@@ -53,10 +53,6 @@ func TestGroupProbeRoutesAreRegistered(t *testing.T) {
 	}
 	for _, route := range []string{
 		http.MethodGet + " /api/status/probes",
-		http.MethodGet + " /api/group-probe/settings",
-		http.MethodPut + " /api/group-probe/settings",
-		http.MethodPost + " /api/group-probe/run",
-		http.MethodGet + " /api/group-probe/results",
 		http.MethodPost + " /api/affiliate/bind",
 		http.MethodGet + " /api/user/aff/overview",
 	} {
@@ -187,7 +183,7 @@ func TestAffiliateBindRouteAllowsRootAdministrator(t *testing.T) {
 	assert.Contains(t, response.Body.String(), `"success":true`)
 }
 
-func TestGroupProbePublicRouteRequiresNoAuthentication(t *testing.T) {
+func TestPublicStatusProbeRouteRequiresNoAuthentication(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	SetApiRouter(engine)
@@ -195,11 +191,25 @@ func TestGroupProbePublicRouteRequiresNoAuthentication(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/status/probes", nil)
 	response := httptest.NewRecorder()
 	require.NotPanics(t, func() { engine.ServeHTTP(response, request) })
-	assert.Equal(t, http.StatusOK, response.Code)
-	assert.Contains(t, response.Body.String(), `"success":true`)
+	require.Equal(t, http.StatusOK, response.Code)
+	assert.Equal(t, "public, max-age=15", response.Header().Get("Cache-Control"))
+	var payload struct {
+		Success bool `json:"success"`
+		Data    struct {
+			GeneratedAt     int64 `json:"generated_at"`
+			IntervalMinutes int   `json:"interval_minutes"`
+			Groups          []any `json:"groups"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &payload))
+	assert.True(t, payload.Success)
+	assert.Positive(t, payload.Data.GeneratedAt)
+	assert.Equal(t, 10, payload.Data.IntervalMinutes)
+	assert.NotNil(t, payload.Data.Groups)
+	assert.Empty(t, payload.Data.Groups)
 }
 
-func TestGroupProbeAdminRoutesRejectAnonymousRequests(t *testing.T) {
+func TestGroupProbeAdminRoutesAreNotRegistered(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	SetApiRouter(engine)
@@ -217,7 +227,7 @@ func TestGroupProbeAdminRoutesRejectAnonymousRequests(t *testing.T) {
 		request := httptest.NewRequest(test.method, test.path, nil)
 		response := httptest.NewRecorder()
 		engine.ServeHTTP(response, request)
-		assert.Equal(t, http.StatusUnauthorized, response.Code, "%s %s", test.method, test.path)
+		assert.Equal(t, http.StatusNotFound, response.Code, "%s %s", test.method, test.path)
 		assert.NotContains(t, response.Body.String(), `"success":true`)
 	}
 }
