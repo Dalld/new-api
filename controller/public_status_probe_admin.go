@@ -150,12 +150,11 @@ func CreatePublicStatusProbeTarget(c *gin.Context) {
 		ChannelID:   request.ChannelID,
 		KeyIndex:    request.KeyIndex,
 	}
-	if err := validatePublicStatusProbeTarget(c, target); err != nil {
-		writePublicStatusProbeAdminMutationError(c, err)
-		return
-	}
 
 	updated, err := model.CompareAndSwapPublicStatusProbeConfig(request.Version, func(next *publicstatusprobesetting.Document) error {
+		if err := validatePublicStatusProbeTarget(c, target); err != nil {
+			return err
+		}
 		candidate := *next
 		candidate.Version = request.Version
 		candidate.Targets = append(append([]publicstatusprobesetting.Target(nil), next.Targets...), target)
@@ -206,15 +205,14 @@ func UpdatePublicStatusProbeTarget(c *gin.Context) {
 		ChannelID:   request.ChannelID,
 		KeyIndex:    request.KeyIndex,
 	}
-	if err := validatePublicStatusProbeTarget(c, target); err != nil {
-		writePublicStatusProbeAdminMutationError(c, err)
-		return
-	}
 
 	updated, err := model.CompareAndSwapPublicStatusProbeConfig(request.Version, func(next *publicstatusprobesetting.Document) error {
 		index := findPublicStatusProbeTargetIndex(next.Targets, pathKey)
 		if index < 0 {
 			return errPublicStatusProbeTargetMissing
+		}
+		if err := validatePublicStatusProbeTarget(c, target); err != nil {
+			return err
 		}
 		candidate := *next
 		candidate.Version = request.Version
@@ -361,6 +359,12 @@ func buildPublicStatusProbeAdminResponse(document publicstatusprobesetting.Docum
 
 func buildPublicStatusProbeAdminChannelDTO(channelID int) (publicStatusProbeAdminChannelDTO, error) {
 	channel, err := model.GetChannelById(channelID, true)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return publicStatusProbeAdminChannelDTO{
+			ID:     channelID,
+			Status: common.ChannelStatusManuallyDisabled,
+		}, nil
+	}
 	if err != nil {
 		return publicStatusProbeAdminChannelDTO{}, err
 	}
