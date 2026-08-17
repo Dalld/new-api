@@ -324,6 +324,9 @@ func updateOptionMap(key string, value string) (err error) {
 		return nil
 	}
 	if isPublicStatusProbeOptionKey(key) {
+		if key != publicstatusprobesetting.OptionKey {
+			return ErrPublicStatusProbeConfigRequiresCAS
+		}
 		return ApplyPublicStatusProbeConfigOption(value)
 	}
 	common.OptionMapRWMutex.Lock()

@@ -111,6 +111,7 @@ func TestGenericOptionWritersRejectEquivalentPublicStatusProbeKeysBeforeDBWrite(
 		strings.ToLower(publicstatusprobesetting.OptionKey),
 		"pUbLiCsTaTuSpRoBeCoNfIg",
 		" \t" + publicstatusprobesetting.OptionKey + "\r\n",
+		"PúblicStatusProbeConfig",
 	}
 	for _, key := range keys {
 		t.Run(fmt.Sprintf("%q", key), func(t *testing.T) {
@@ -443,12 +444,17 @@ func TestUpdateOptionMapStrictlyAppliesPublicStatusProbeConfig(t *testing.T) {
 	versions := make(chan int64, 1)
 	publicstatusprobesetting.SetPublishHook(func(version int64) { versions <- version })
 
-	require.NoError(t, updateOptionMap(strings.ToLower(publicstatusprobesetting.OptionKey), raw))
+	require.NoError(t, updateOptionMap(publicstatusprobesetting.OptionKey, raw))
 	assert.Equal(t, document, publicstatusprobesetting.CurrentDocument())
 	assert.Equal(t, document.Version, requirePublishedVersion(t, versions))
 	common.OptionMapRWMutex.RLock()
 	assert.Equal(t, raw, common.OptionMap[publicstatusprobesetting.OptionKey])
-	_, aliasExists := common.OptionMap[strings.ToLower(publicstatusprobesetting.OptionKey)]
+	common.OptionMapRWMutex.RUnlock()
+
+	alias := strings.ToLower(publicstatusprobesetting.OptionKey)
+	require.ErrorIs(t, updateOptionMap(alias, raw), ErrPublicStatusProbeConfigRequiresCAS)
+	common.OptionMapRWMutex.RLock()
+	_, aliasExists := common.OptionMap[alias]
 	assert.False(t, aliasExists)
 	common.OptionMapRWMutex.RUnlock()
 
@@ -698,6 +704,64 @@ func TestPublicStatusProbeSilentSessionPreservesTransactionRollback(t *testing.T
 	assert.Zero(t, count)
 }
 
+func TestPublicStatusProbeDatabaseIdentityIgnoresUnicodeAlias(t *testing.T) {
+	db := usePublicStatusProbeConfigDB(t)
+	useInitialPublicStatusProbeRuntime(t)
+	aliasDocument := publicStatusProbeDocument(43)
+	aliasDocument.Version = 9
+	aliasRaw, err := publicstatusprobesetting.EncodeDocument(aliasDocument)
+	require.NoError(t, err)
+	const aliasKey = "PúblicStatusProbeConfig"
+	require.NoError(t, db.Create(&Option{Key: aliasKey, Value: aliasRaw}).Error)
+
+	_, err = GetPublicStatusProbeConfig()
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	require.ErrorIs(t, updateOptionMap(aliasKey, aliasRaw), ErrPublicStatusProbeConfigRequiresCAS)
+	assert.Equal(t, publicstatusprobesetting.DefaultDocument(), publicstatusprobesetting.CurrentDocument())
+	common.OptionMapRWMutex.RLock()
+	_, canonicalExists := common.OptionMap[publicstatusprobesetting.OptionKey]
+	_, aliasExists := common.OptionMap[aliasKey]
+	common.OptionMapRWMutex.RUnlock()
+	assert.False(t, canonicalExists)
+	assert.False(t, aliasExists)
+
+	bootstrap := publicStatusProbeDocument(44)
+	saved, created, err := EnsurePublicStatusProbeConfig(bootstrap)
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, bootstrap, saved)
+	assert.Equal(t, bootstrap, publicstatusprobesetting.CurrentDocument())
+	var aliases int64
+	require.NoError(t, db.Model(&Option{}).Where("key = ?", aliasKey).Count(&aliases).Error)
+	assert.Equal(t, int64(1), aliases)
+}
+
+func TestEnsurePublicStatusProbeConfigReturnsIdentityConflictWhenCanonicalCreateIsIgnored(t *testing.T) {
+	db := usePublicStatusProbeConfigDB(t)
+	useInitialPublicStatusProbeRuntime(t)
+	aliasDocument := publicStatusProbeDocument(45)
+	aliasRaw, err := publicstatusprobesetting.EncodeDocument(aliasDocument)
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&Option{Key: "PúblicStatusProbeConfig", Value: aliasRaw}).Error)
+	require.NoError(t, db.Exec(`
+		CREATE TRIGGER ignore_public_status_probe_canonical_create
+		BEFORE INSERT ON options
+		WHEN NEW.key = 'PublicStatusProbeConfig'
+		BEGIN
+			SELECT RAISE(IGNORE);
+		END
+	`).Error)
+
+	_, created, err := EnsurePublicStatusProbeConfig(publicStatusProbeDocument(46))
+	require.ErrorIs(t, err, ErrPublicStatusProbeConfigIdentityConflict)
+	assert.False(t, created)
+	assert.Equal(t, publicstatusprobesetting.DefaultDocument(), publicstatusprobesetting.CurrentDocument())
+	common.OptionMapRWMutex.RLock()
+	_, canonicalExists := common.OptionMap[publicstatusprobesetting.OptionKey]
+	common.OptionMapRWMutex.RUnlock()
+	assert.False(t, canonicalExists)
+}
+
 func TestPublicStatusProbePersistenceSQLIsPortable(t *testing.T) {
 	bootstrap := publicStatusProbeDocument(40)
 	newRaw, err := publicstatusprobesetting.EncodeDocument(bootstrap)
@@ -737,6 +801,17 @@ func TestPublicStatusProbePersistenceSQLIsPortable(t *testing.T) {
 				assert.Contains(t, createSQL, "ON CONFLICT DO NOTHING")
 			}
 
+			var option Option
+			lookup := takePublicStatusProbeOption(db, &option)
+			require.NoError(t, lookup.Error)
+			lookupSQL := strings.ToUpper(lookup.Statement.SQL.String())
+			if name == "mysql" {
+				assert.Contains(t, lookupSQL, "BINARY `KEY` = BINARY")
+			} else {
+				assert.Contains(t, lookupSQL, `"KEY" =`)
+			}
+			assert.Contains(t, lookup.Statement.Vars, publicstatusprobesetting.OptionKey)
+
 			update := updatePublicStatusProbeConfig(db, oldRaw, newRaw)
 			require.NoError(t, update.Error)
 			updateSQL := strings.ToUpper(update.Statement.SQL.String())
@@ -745,7 +820,7 @@ func TestPublicStatusProbePersistenceSQLIsPortable(t *testing.T) {
 			assert.Contains(t, updateSQL, "KEY")
 			assert.Contains(t, updateSQL, "VALUE")
 			if name == "mysql" {
-				assert.Contains(t, updateSQL, "`KEY`")
+				assert.Contains(t, updateSQL, "BINARY `KEY` = BINARY")
 				assert.Contains(t, updateSQL, "BINARY `VALUE` = BINARY")
 			} else {
 				assert.Contains(t, updateSQL, `"KEY"`)
