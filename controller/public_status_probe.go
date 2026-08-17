@@ -61,10 +61,11 @@ type publicStatusProbeErrorDTO struct {
 }
 
 type publicStatusProbeCacheEntry struct {
-	body         []byte
-	etag         string
-	expiresAt    time.Time
-	failureUntil time.Time
+	body          []byte
+	etag          string
+	configVersion int64
+	expiresAt     time.Time
+	failureUntil  time.Time
 }
 
 var (
@@ -98,16 +99,22 @@ func getPublicStatusProbeResponse() ([]byte, string, error) {
 	defer publicStatusProbeCacheMu.Unlock()
 
 	now := publicStatusProbeNow().UTC()
-	if publicStatusProbeCache.body != nil && now.Before(publicStatusProbeCache.expiresAt) {
+	document := public_status_probe_setting.CurrentDocument()
+	if publicStatusProbeCache.body != nil &&
+		publicStatusProbeCache.configVersion == document.Version &&
+		now.Before(publicStatusProbeCache.expiresAt) {
 		return publicStatusProbeCache.body, publicStatusProbeCache.etag, nil
 	}
-	if now.Before(publicStatusProbeCache.failureUntil) {
+	if publicStatusProbeCache.configVersion == document.Version && now.Before(publicStatusProbeCache.failureUntil) {
 		return nil, "", errPublicStatusProbeCachedFailure
 	}
 
-	response, err := buildPublicStatusProbeResponse(now)
+	response, err := buildPublicStatusProbeResponseFromDocument(now, document)
 	if err != nil {
-		publicStatusProbeCache.failureUntil = now.Add(publicStatusProbeFailureBackoff)
+		publicStatusProbeCache = publicStatusProbeCacheEntry{
+			configVersion: document.Version,
+			failureUntil:  now.Add(publicStatusProbeFailureBackoff),
+		}
 		return nil, "", err
 	}
 	body, err := common.Marshal(response)
@@ -117,40 +124,36 @@ func getPublicStatusProbeResponse() ([]byte, string, error) {
 	digest := sha256.Sum256(body)
 	etag := fmt.Sprintf("W/\"%x\"", digest)
 	publicStatusProbeCache = publicStatusProbeCacheEntry{
-		body:         body,
-		etag:         etag,
-		expiresAt:    now.Add(publicStatusProbeCacheMaxAge),
-		failureUntil: time.Time{},
+		body:          body,
+		etag:          etag,
+		configVersion: document.Version,
+		expiresAt:     now.Add(publicStatusProbeCacheMaxAge),
+		failureUntil:  time.Time{},
 	}
 	return body, etag, nil
 }
 
 func buildPublicStatusProbeResponse(now time.Time) (publicStatusProbeResponseDTO, error) {
-	probeSetting, err := public_status_probe_setting.Load()
-	if err != nil {
-		return publicStatusProbeResponseDTO{
-			Success: true,
-			Data: publicStatusProbeDataDTO{
-				GeneratedAt:     now.Unix(),
-				IntervalSeconds: 60,
-				Targets:         make([]publicStatusProbeTargetDTO, 0),
-			},
-		}, nil
-	}
+	return buildPublicStatusProbeResponseFromDocument(now, public_status_probe_setting.CurrentDocument())
+}
 
-	intervalSeconds := int64(probeSetting.Interval / time.Second)
+func buildPublicStatusProbeResponseFromDocument(now time.Time, document public_status_probe_setting.Document) (publicStatusProbeResponseDTO, error) {
+	const interval = time.Minute
 	data := publicStatusProbeDataDTO{
 		GeneratedAt:     now.Unix(),
-		IntervalSeconds: intervalSeconds,
+		IntervalSeconds: int64(interval / time.Second),
 		Targets:         make([]publicStatusProbeTargetDTO, 0),
 	}
-	if !probeSetting.Enabled || len(probeSetting.Targets) == 0 {
+	if !document.Enabled || len(document.Targets) == 0 {
 		return publicStatusProbeResponseDTO{Success: true, Data: data}, nil
 	}
 
-	nextCheckAt := now.Truncate(probeSetting.Interval).Add(probeSetting.Interval).Unix()
-	data.Targets = make([]publicStatusProbeTargetDTO, 0, len(probeSetting.Targets))
-	for _, configuredTarget := range probeSetting.Targets {
+	nextCheckAt := now.Truncate(interval).Add(interval).Unix()
+	data.Targets = make([]publicStatusProbeTargetDTO, 0, len(document.Targets))
+	for _, configuredTarget := range document.Targets {
+		if !configuredTarget.Enabled {
+			continue
+		}
 		results, queryErr := publicStatusProbeLatestResults(configuredTarget.Key, model.MaxPublicStatusProbeHistory)
 		if queryErr != nil {
 			return publicStatusProbeResponseDTO{}, queryErr
@@ -162,13 +165,6 @@ func buildPublicStatusProbeResponse(now time.Time) (publicStatusProbeResponseDTO
 }
 
 func publicStatusProbeTarget(configuredTarget public_status_probe_setting.Target, results []model.PublicStatusProbeResult, nextCheckAt int64) publicStatusProbeTargetDTO {
-	matchingResults := make([]model.PublicStatusProbeResult, 0, len(results))
-	for _, result := range results {
-		if result.ChannelID == configuredTarget.ChannelID && result.ModelName == configuredTarget.Model {
-			matchingResults = append(matchingResults, result)
-		}
-	}
-	results = matchingResults
 	if len(results) > model.MaxPublicStatusProbeHistory {
 		results = results[len(results)-model.MaxPublicStatusProbeHistory:]
 	}
@@ -207,6 +203,12 @@ func publicStatusProbeTarget(configuredTarget public_status_probe_setting.Target
 	target.ChatLatencyMS = latest.ChatLatencyMS
 	target.LatestCheckedAt = &latest.CheckedAt
 	return target
+}
+
+func InvalidatePublicStatusProbeCache(_ int64) {
+	publicStatusProbeCacheMu.Lock()
+	publicStatusProbeCache = publicStatusProbeCacheEntry{}
+	publicStatusProbeCacheMu.Unlock()
 }
 
 func publicStatusProbeErrorCode(code string) *string {

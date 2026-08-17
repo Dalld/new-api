@@ -64,6 +64,7 @@ func main() {
 		common.FatalLog("failed to initialize public status probe configuration")
 		return
 	}
+	publicstatusprobesetting.SetPublishHook(controller.InvalidatePublicStatusProbeCache)
 
 	common.SysLog("New API " + common.Version + " started")
 	if os.Getenv("GIN_MODE") != "debug" {
