@@ -43,6 +43,7 @@ type probeChannelRow struct {
 	OpenAIOrganization *string
 	Status             int
 	BaseURL            *string
+	Models             string
 	ModelMapping       *string
 	Setting            *string
 	ParamOverride      *string
@@ -64,7 +65,7 @@ func (loader *DBTargetLoader) Load(ctx context.Context, target publicstatusprobe
 
 	var channel probeChannelRow
 	err := loader.db.WithContext(ctx).Table("channels").
-		Select("id", "type", "key", "open_ai_organization", "status", "base_url", "model_mapping", "setting", "param_override", "header_override", "channel_info").
+		Select("id", "type", "key", "open_ai_organization", "status", "base_url", "models", "model_mapping", "setting", "param_override", "header_override", "channel_info").
 		Where("id = ?", target.ChannelID).
 		Take(&channel).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -83,6 +84,9 @@ func (loader *DBTargetLoader) Load(ctx context.Context, target publicstatusprobe
 	}
 	if hasConfiguredValue(channel.ParamOverride) || hasConfiguredValue(channel.HeaderOverride) || channelUsesProxy(channel.Setting) {
 		return LoadedTarget{}, codedError(ErrorUnsupportedProvider)
+	}
+	if !channelOffersModel(channel.Models, target.Model) {
+		return LoadedTarget{}, codedError(ErrorInvalidTarget)
 	}
 
 	apiKey, err := selectExplicitKey(channel.Key, channel.ChannelInfo, target.KeyIndex)
@@ -126,6 +130,19 @@ func (loader *DBTargetLoader) Load(ctx context.Context, target publicstatusprobe
 		return LoadedTarget{}, err
 	}
 	return loaded, nil
+}
+
+func channelOffersModel(rawModels string, configuredModel string) bool {
+	configuredModel = strings.TrimSpace(configuredModel)
+	if configuredModel == "" {
+		return false
+	}
+	for _, availableModel := range strings.Split(rawModels, ",") {
+		if strings.TrimSpace(availableModel) == configuredModel {
+			return true
+		}
+	}
+	return false
 }
 
 func (loader *DBTargetLoader) ValidateTarget(ctx context.Context, target publicstatusprobesetting.Target) error {

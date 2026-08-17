@@ -24,7 +24,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/status", controller.GetStatus)
 		apiRouter.GET("/status/probes", middleware.PublicStatusProbeRateLimit(), controller.GetPublicStatusProbes)
 		publicStatusProbeAdminRoute := apiRouter.Group("/public-status-probe")
-		publicStatusProbeAdminRoute.Use(middleware.RootAuth(), middleware.DisableCache())
+		publicStatusProbeAdminRoute.Use(middleware.DisableCache(), middleware.RootAuth())
 		{
 			publicStatusProbeAdminRoute.GET("/config", controller.GetPublicStatusProbeConfig)
 			publicStatusProbeAdminRoute.PUT("/config", controller.UpdatePublicStatusProbeConfig)

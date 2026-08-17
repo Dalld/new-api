@@ -37,12 +37,32 @@ func insertProbeChannel(t *testing.T, db *gorm.DB, channel model.Channel) model.
 	if channel.Key == "" {
 		channel.Key = "provider-key"
 	}
+	if channel.Models == "" {
+		channel.Models = "public-model"
+	}
 	if channel.BaseURL == nil {
 		baseURL := "https://provider.example"
 		channel.BaseURL = &baseURL
 	}
 	require.NoError(t, db.Create(&channel).Error)
 	return channel
+}
+
+func TestDBTargetLoaderRejectsModelNotConfiguredOnChannel(t *testing.T) {
+	db := newProbeLoaderTestDB(t)
+	channel := insertProbeChannel(t, db, model.Channel{
+		Id:     41,
+		Type:   constant.ChannelTypeOpenAI,
+		Models: "other-model, another-model ",
+	})
+
+	_, err := NewDBTargetLoader(db).Load(
+		context.Background(),
+		probeTarget(channel.Id, publicstatusprobesetting.ProtocolOpenAIChat),
+	)
+
+	require.Error(t, err)
+	assert.Equal(t, ErrorInvalidTarget, ErrorCodeOf(err))
 }
 
 func probeTarget(channelID int, protocol publicstatusprobesetting.Protocol) publicstatusprobesetting.Target {

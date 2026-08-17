@@ -122,7 +122,7 @@ func performPublicStatusProbeAdminRequest(t *testing.T, engine *gin.Engine, meth
 
 func registerPublicStatusProbeAdminTestRoutes(engine *gin.Engine) {
 	admin := engine.Group("/api/public-status-probe")
-	admin.Use(middleware.RootAuth(), middleware.DisableCache())
+	admin.Use(middleware.DisableCache(), middleware.RootAuth())
 	{
 		admin.GET("/config", GetPublicStatusProbeConfig)
 		admin.PUT("/config", UpdatePublicStatusProbeConfig)
@@ -161,9 +161,11 @@ func TestPublicStatusProbeAdminRoutesRequireRootAndDisableCache(t *testing.T) {
 
 	anonymous := performPublicStatusProbeAdminRequest(t, engine, http.MethodGet, "/api/public-status-probe/config", "", "")
 	assert.Equal(t, http.StatusUnauthorized, anonymous.Code)
+	assert.Equal(t, "no-store, no-cache, must-revalidate, private, max-age=0", anonymous.Header().Get("Cache-Control"))
 
 	admin := performPublicStatusProbeAdminRequest(t, engine, http.MethodGet, "/api/public-status-probe/config", "", adminToken)
 	assert.Equal(t, http.StatusForbidden, admin.Code)
+	assert.Equal(t, "no-store, no-cache, must-revalidate, private, max-age=0", admin.Header().Get("Cache-Control"))
 
 	root := performPublicStatusProbeAdminRequest(t, engine, http.MethodGet, "/api/public-status-probe/config", "", rootToken)
 	assert.Equal(t, http.StatusOK, root.Code)
@@ -306,12 +308,32 @@ func TestPublicStatusProbeAdminRejectsMissingTargetAndStaleConfigVersion(t *test
 
 	staleCreate := performPublicStatusProbeAdminRequest(t, engine, http.MethodPost, "/api/public-status-probe/targets", `{"version":11,"enabled":true,"group":"group-z","display_name":"Stale Create","model":"gpt-5.5","protocol":"openai_chat","channel_id":404,"key_index":0}`, rootToken)
 	assert.Equal(t, http.StatusConflict, staleCreate.Code)
+	var staleCreatePayload publicStatusProbeAdminConflictResponse
+	require.NoError(t, common.Unmarshal(staleCreate.Body.Bytes(), &staleCreatePayload))
+	assert.Equal(t, int64(12), staleCreatePayload.Data.Version)
 
 	staleUpdate := performPublicStatusProbeAdminRequest(t, engine, http.MethodPut, "/api/public-status-probe/targets/probe-conflict", `{"version":11,"enabled":true,"group":"group-z","display_name":"Stale Update","model":"gpt-5.5","protocol":"openai_chat","channel_id":404,"key_index":0}`, rootToken)
 	assert.Equal(t, http.StatusConflict, staleUpdate.Code)
+	var auditLog model.Log
+	require.NoError(t, db.Where("type = ?", model.LogTypeManage).Order("id desc").First(&auditLog).Error)
+	assert.NotContains(t, auditLog.Other, "Stale Update")
+	var auditPayload struct {
+		Op struct {
+			Action string                 `json:"action"`
+			Params map[string]interface{} `json:"params"`
+		} `json:"op"`
+	}
+	require.NoError(t, common.Unmarshal([]byte(auditLog.Other), &auditPayload))
+	assert.Equal(t, "public_status_probe.target_update", auditPayload.Op.Action)
+	assert.Equal(t, "probe-conflict", auditPayload.Op.Params["target_key"])
+	assert.Equal(t, float64(11), auditPayload.Op.Params["version"])
+	assert.Equal(t, false, auditPayload.Op.Params["success"])
 
 	conflict := performPublicStatusProbeAdminRequest(t, engine, http.MethodPut, "/api/public-status-probe/config", `{"version":11,"enabled":false,"ping_timeout_seconds":8,"chat_timeout_seconds":45,"degraded_latency_ms":6000,"concurrency":5,"retention_days":7}`, rootToken)
 	assert.Equal(t, http.StatusConflict, conflict.Code)
+	var conflictPayload publicStatusProbeAdminConflictResponse
+	require.NoError(t, common.Unmarshal(conflict.Body.Bytes(), &conflictPayload))
+	assert.Equal(t, int64(12), conflictPayload.Data.Version)
 }
 
 func TestPublicStatusProbeAdminReturnsAndDeletesOrphanTarget(t *testing.T) {

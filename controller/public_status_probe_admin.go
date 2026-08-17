@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -19,6 +20,7 @@ import (
 )
 
 const publicStatusProbeAdminMaxRequestBytes = 64 * 1024
+const publicStatusProbeAdminMaxTargetKeyRunes = 96
 
 var (
 	errPublicStatusProbeAdminBadRequest = errors.New("invalid public status probe request")
@@ -86,6 +88,14 @@ type publicStatusProbeAdminResponse struct {
 	Data    publicStatusProbeAdminConfigDTO `json:"data"`
 }
 
+type publicStatusProbeAdminConflictResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Data    struct {
+		Version int64 `json:"version"`
+	} `json:"data"`
+}
+
 func GetPublicStatusProbeConfig(c *gin.Context) {
 	response, err := buildPublicStatusProbeAdminResponse(publicstatusprobesetting.CurrentDocument())
 	if err != nil {
@@ -98,6 +108,7 @@ func GetPublicStatusProbeConfig(c *gin.Context) {
 func UpdatePublicStatusProbeConfig(c *gin.Context) {
 	var request publicStatusProbeAdminConfigUpdateRequest
 	if err := decodePublicStatusProbeAdminRequest(c, &request); err != nil {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.config_update", "", request.Version)
 		writePublicStatusProbeAdminError(c, http.StatusBadRequest, "invalid public status probe configuration")
 		return
 	}
@@ -118,6 +129,7 @@ func UpdatePublicStatusProbeConfig(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.config_update", "", request.Version)
 		writePublicStatusProbeAdminMutationError(c, err)
 		return
 	}
@@ -136,6 +148,7 @@ func UpdatePublicStatusProbeConfig(c *gin.Context) {
 func CreatePublicStatusProbeTarget(c *gin.Context) {
 	var request publicStatusProbeAdminTargetRequest
 	if err := decodePublicStatusProbeAdminRequest(c, &request); err != nil {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.target_create", "", request.Version)
 		writePublicStatusProbeAdminError(c, http.StatusBadRequest, "invalid public status probe target")
 		return
 	}
@@ -166,6 +179,7 @@ func CreatePublicStatusProbeTarget(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.target_create", "", request.Version)
 		writePublicStatusProbeAdminMutationError(c, err)
 		return
 	}
@@ -185,12 +199,14 @@ func CreatePublicStatusProbeTarget(c *gin.Context) {
 func UpdatePublicStatusProbeTarget(c *gin.Context) {
 	pathKey := strings.TrimSpace(c.Param("key"))
 	if pathKey == "" {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.target_update", "", 0)
 		writePublicStatusProbeAdminError(c, http.StatusNotFound, "public status probe target not found")
 		return
 	}
 
 	var request publicStatusProbeAdminTargetRequest
 	if err := decodePublicStatusProbeAdminRequest(c, &request); err != nil {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.target_update", pathKey, request.Version)
 		writePublicStatusProbeAdminError(c, http.StatusBadRequest, "invalid public status probe target")
 		return
 	}
@@ -227,6 +243,7 @@ func UpdatePublicStatusProbeTarget(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.target_update", pathKey, request.Version)
 		writePublicStatusProbeAdminMutationError(c, err)
 		return
 	}
@@ -246,6 +263,7 @@ func UpdatePublicStatusProbeTarget(c *gin.Context) {
 func DeletePublicStatusProbeTarget(c *gin.Context) {
 	pathKey := strings.TrimSpace(c.Param("key"))
 	if pathKey == "" {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.target_delete", "", 0)
 		writePublicStatusProbeAdminError(c, http.StatusNotFound, "public status probe target not found")
 		return
 	}
@@ -253,6 +271,7 @@ func DeletePublicStatusProbeTarget(c *gin.Context) {
 	versionRaw := strings.TrimSpace(c.Query("version"))
 	version, err := strconv.ParseInt(versionRaw, 10, 64)
 	if err != nil || version <= 0 {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.target_delete", pathKey, 0)
 		writePublicStatusProbeAdminError(c, http.StatusBadRequest, "invalid public status probe version")
 		return
 	}
@@ -274,6 +293,7 @@ func DeletePublicStatusProbeTarget(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.target_delete", pathKey, version)
 		writePublicStatusProbeAdminMutationError(c, err)
 		return
 	}
@@ -391,7 +411,7 @@ func writePublicStatusProbeAdminMutationError(c *gin.Context, err error) {
 	case errors.Is(err, errPublicStatusProbeTargetMissing), errors.Is(err, gorm.ErrRecordNotFound):
 		writePublicStatusProbeAdminError(c, http.StatusNotFound, "public status probe target not found")
 	case errors.Is(err, model.ErrPublicStatusProbeConfigConflict):
-		writePublicStatusProbeAdminError(c, http.StatusConflict, "public status probe configuration conflict")
+		writePublicStatusProbeAdminConflict(c)
 	default:
 		switch probeservice.ErrorCodeOf(err) {
 		case probeservice.ErrorInvalidTarget, probeservice.ErrorUnsupportedProvider, probeservice.ErrorValidationFailed, probeservice.ErrorResponseTooLarge:
@@ -406,6 +426,33 @@ func writePublicStatusProbeAdminMutationError(c *gin.Context, err error) {
 			writePublicStatusProbeAdminError(c, http.StatusBadRequest, "invalid public status probe request")
 		}
 	}
+}
+
+func writePublicStatusProbeAdminConflict(c *gin.Context) {
+	version := publicstatusprobesetting.CurrentDocument().Version
+	if current, err := model.GetPublicStatusProbeConfig(); err == nil {
+		version = current.Version
+	}
+	response := publicStatusProbeAdminConflictResponse{
+		Success: false,
+		Message: "public status probe configuration conflict",
+	}
+	response.Data.Version = version
+	c.AbortWithStatusJSON(http.StatusConflict, response)
+}
+
+func recordPublicStatusProbeAdminRejectedAudit(c *gin.Context, action string, targetKey string, version int64) {
+	params := map[string]interface{}{
+		"success": false,
+	}
+	if version > 0 {
+		params["version"] = version
+	}
+	targetKey = strings.TrimSpace(targetKey)
+	if targetKey != "" && utf8.ValidString(targetKey) && utf8.RuneCountInString(targetKey) <= publicStatusProbeAdminMaxTargetKeyRunes {
+		params["target_key"] = targetKey
+	}
+	recordManageAudit(c, action, params)
 }
 
 func writePublicStatusProbeAdminError(c *gin.Context, status int, message string) {

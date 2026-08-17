@@ -104,6 +104,7 @@ func TestPublicStatusProbeAdminRoutesAreRegisteredAndRootOnly(t *testing.T) {
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, request)
 	assert.Equal(t, http.StatusUnauthorized, response.Code)
+	assert.Equal(t, "no-store, no-cache, must-revalidate, private, max-age=0", response.Header().Get("Cache-Control"))
 }
 
 func TestAffiliateOverviewRouteRejectsAnonymousRequests(t *testing.T) {
