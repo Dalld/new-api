@@ -228,8 +228,10 @@ func UpdatePublicStatusProbeTarget(c *gin.Context) {
 		if index < 0 {
 			return errPublicStatusProbeTargetMissing
 		}
-		if err := validatePublicStatusProbeTarget(c, target); err != nil {
-			return err
+		if target.Enabled {
+			if err := validatePublicStatusProbeTarget(c, target); err != nil {
+				return err
+			}
 		}
 		candidate := *next
 		candidate.Version = request.Version

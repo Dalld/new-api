@@ -391,6 +391,42 @@ func TestPublicStatusProbeAdminReturnsAndDeletesOrphanTarget(t *testing.T) {
 	assert.Empty(t, deletePayload.Data.Targets)
 }
 
+func TestPublicStatusProbeAdminCanDisableOrphanTarget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupPublicStatusProbeAdminControllerTestDB(t)
+	preservePublicStatusProbeAdminRuntime(t)
+
+	rootToken := "public-status-probe-root-disable-orphan-token"
+	seedPublicStatusProbeAdminUser(t, db, "root-disable-orphan", common.RoleRootUser, rootToken)
+	initial := publicstatusprobesetting.DefaultDocument()
+	initial.Enabled = true
+	initial.Version = 31
+	initial.Targets = []publicstatusprobesetting.Target{
+		{
+			Enabled:     true,
+			Key:         "probe-disable-orphan",
+			Group:       "group-orphan",
+			DisplayName: "Orphan Probe",
+			Model:       "gpt-5.5",
+			Protocol:    publicstatusprobesetting.ProtocolOpenAIChat,
+			ChannelID:   909,
+			KeyIndex:    0,
+		},
+	}
+	publishPublicStatusProbeAdminConfig(t, db, initial)
+
+	engine := gin.New()
+	registerPublicStatusProbeAdminTestRoutes(engine)
+	response := performPublicStatusProbeAdminRequest(t, engine, http.MethodPut, "/api/public-status-probe/targets/probe-disable-orphan", `{"version":31,"enabled":false,"group":"group-orphan","display_name":"Orphan Probe","model":"gpt-5.5","protocol":"openai_chat","channel_id":909,"key_index":0}`, rootToken)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	var payload publicStatusProbeAdminResponse
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &payload))
+	assert.Equal(t, int64(32), payload.Data.Version)
+	require.Len(t, payload.Data.Targets, 1)
+	assert.False(t, payload.Data.Targets[0].Enabled)
+}
+
 func ptrString(value string) *string {
 	return &value
 }
