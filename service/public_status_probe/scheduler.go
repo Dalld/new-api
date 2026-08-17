@@ -64,6 +64,16 @@ func (RuntimeSettingProvider) CurrentSetting() publicstatusprobesetting.Setting 
 	return publicstatusprobesetting.CurrentSetting()
 }
 
+type schedulerTimer struct {
+	channel <-chan time.Time
+	stop    func() bool
+}
+
+func newSchedulerTimer(delay time.Duration) schedulerTimer {
+	timer := time.NewTimer(delay)
+	return schedulerTimer{channel: timer.C, stop: timer.Stop}
+}
+
 type Scheduler struct {
 	provider SettingProvider
 	loader   TargetLoader
@@ -71,6 +81,7 @@ type Scheduler struct {
 	client   *http.Client
 	ownerID  string
 	now      func() time.Time
+	newTimer func(time.Duration) schedulerTimer
 
 	adapterFor      func(Snapshot, *http.Client) (Adapter, error)
 	ping            func(context.Context, *http.Client, string, time.Duration) PingResult
@@ -99,6 +110,7 @@ func NewScheduler(provider SettingProvider, loader TargetLoader, repository prob
 		client:          client,
 		ownerID:         uuid.NewString(),
 		now:             time.Now,
+		newTimer:        newSchedulerTimer,
 		adapterFor:      AdapterFor,
 		ping:            Ping,
 		runConversation: RunConversation,
@@ -127,14 +139,12 @@ func (scheduler *Scheduler) Run(ctx context.Context) {
 	for {
 		now := scheduler.now().UTC()
 		next := nextProbeSlot(now, time.Minute)
-		timer := time.NewTimer(time.Until(next))
+		timer := scheduler.newTimer(time.Until(next))
 		select {
 		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
+			timer.stop()
 			return
-		case <-timer.C:
+		case <-timer.channel:
 			woke := scheduler.now().UTC()
 			scheduler.runSlot(ctx, probeSlotAfterWake(next, woke, time.Minute))
 		}

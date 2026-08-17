@@ -251,10 +251,19 @@ func TestSchedulerReadsOneSettingSnapshotPerSlot(t *testing.T) {
 
 	done := make(chan bool, 1)
 	go func() { done <- scheduler.runSlot(context.Background(), time.Unix(1_700_000_040, 0)) }()
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("slot did not enter loader within one second")
+	}
 	provider.set(second)
 	close(release)
-	require.True(t, <-done)
+	select {
+	case completed := <-done:
+		require.True(t, completed)
+	case <-time.After(time.Second):
+		t.Fatal("slot did not complete within one second")
+	}
 
 	assert.Equal(t, 2, provider.callCount(), "constructor plus one slot snapshot")
 	require.Len(t, repository.created, 1)
@@ -400,11 +409,20 @@ func TestSchedulerSkipsOverlappingLocalCycle(t *testing.T) {
 	slot := time.Unix(1_700_000_040, 0).UTC()
 	done := make(chan bool, 1)
 	go func() { done <- scheduler.runSlot(context.Background(), slot) }()
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("slot did not enter loader within one second")
+	}
 
 	assert.False(t, scheduler.runSlot(context.Background(), slot.Add(time.Minute)))
 	close(release)
-	assert.True(t, <-done)
+	select {
+	case completed := <-done:
+		assert.True(t, completed)
+	case <-time.After(time.Second):
+		t.Fatal("slot did not complete within one second")
+	}
 }
 
 func TestSchedulerRenewsLeaseWhileLoaderIsBlocked(t *testing.T) {
@@ -428,7 +446,11 @@ func TestSchedulerRenewsLeaseWhileLoaderIsBlocked(t *testing.T) {
 	scheduler.renewInterval = 5 * time.Millisecond
 	done := make(chan bool, 1)
 	go func() { done <- scheduler.runSlot(context.Background(), time.Unix(1_700_000_040, 0)) }()
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("slot did not enter loader within one second")
+	}
 
 	require.Eventually(t, func() bool {
 		repository.mutex.Lock()
@@ -436,7 +458,12 @@ func TestSchedulerRenewsLeaseWhileLoaderIsBlocked(t *testing.T) {
 		return repository.renewCalls > 0
 	}, time.Second, 5*time.Millisecond)
 	close(release)
-	assert.True(t, <-done)
+	select {
+	case completed := <-done:
+		assert.True(t, completed)
+	case <-time.After(time.Second):
+		t.Fatal("slot did not complete within one second")
+	}
 	require.Len(t, repository.created, 1)
 }
 
@@ -521,4 +548,37 @@ func TestSchedulerDerivesProductionRenewIntervalFromEachSlotLeaseDuration(t *tes
 	longLease := 75 * time.Second
 	assert.Equal(t, shortLease/3, scheduler.renewIntervalFor(shortLease))
 	assert.Equal(t, 20*time.Second, scheduler.renewIntervalFor(longLease))
+}
+
+func TestSchedulerRunCancellationDoesNotDrainExpiredTimer(t *testing.T) {
+	setting := schedulerSetting(0, 1)
+	scheduler := newTestScheduler(t, setting, targetLoaderFunc(func(_ context.Context, target publicstatusprobesetting.Target) (LoadedTarget, error) {
+		return loadedSchedulerTarget(target), nil
+	}), newFakeProbeRepository())
+	timerCreated := make(chan struct{})
+	scheduler.newTimer = func(time.Duration) schedulerTimer {
+		close(timerCreated)
+		return schedulerTimer{
+			channel: make(chan time.Time),
+			stop:    func() bool { return false },
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		scheduler.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-timerCreated:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not create timer within one second")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not exit after timer-boundary cancellation")
+	}
 }
