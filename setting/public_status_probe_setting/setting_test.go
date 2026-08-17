@@ -246,6 +246,7 @@ func TestLoadNormalizesTargetsAndKeyIndex(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, setting.Targets, 3)
 	assert.Equal(t, Target{
+		Enabled:     true,
 		Key:         "target-a",
 		Group:       "group-a",
 		DisplayName: "Target A",

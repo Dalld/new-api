@@ -43,6 +43,7 @@ const (
 )
 
 type Target struct {
+	Enabled     bool     `json:"enabled"`
 	Key         string   `json:"key"`
 	Group       string   `json:"group"`
 	DisplayName string   `json:"display_name"`
@@ -64,6 +65,7 @@ type Setting struct {
 }
 
 type rawTarget struct {
+	Enabled     *bool    `json:"enabled"`
 	Key         string   `json:"key"`
 	Group       string   `json:"group"`
 	DisplayName string   `json:"display_name"`
@@ -161,7 +163,7 @@ func targetSetting(lookup func(string) (string, bool)) ([]Target, error) {
 	for _, fields := range rawTargets {
 		for field := range fields {
 			switch field {
-			case "key", "group", "display_name", "model", "protocol", "channel_id", "key_index":
+			case "enabled", "key", "group", "display_name", "model", "protocol", "channel_id", "key_index":
 			default:
 				return nil, errors.New(invalidConfigurationErrorText)
 			}
@@ -205,9 +207,14 @@ func targetSetting(lookup func(string) (string, bool)) ([]Target, error) {
 		if keyIndex < 0 {
 			return nil, errors.New(invalidConfigurationErrorText)
 		}
+		enabled := true
+		if rawTarget.Enabled != nil {
+			enabled = *rawTarget.Enabled
+		}
 
 		keys[key] = struct{}{}
 		targets = append(targets, Target{
+			Enabled:     enabled,
 			Key:         key,
 			Group:       group,
 			DisplayName: displayName,
