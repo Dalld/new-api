@@ -54,13 +54,23 @@ func (modelProbeRepository) DeleteBefore(cutoff int64) (int64, error) {
 	return model.DeletePublicStatusProbeResultsBefore(cutoff)
 }
 
+type SettingProvider interface {
+	CurrentSetting() publicstatusprobesetting.Setting
+}
+
+type RuntimeSettingProvider struct{}
+
+func (RuntimeSettingProvider) CurrentSetting() publicstatusprobesetting.Setting {
+	return publicstatusprobesetting.CurrentSetting()
+}
+
 type Scheduler struct {
-	setting publicstatusprobesetting.Setting
-	loader  TargetLoader
-	repo    probeRepository
-	client  *http.Client
-	ownerID string
-	now     func() time.Time
+	provider SettingProvider
+	loader   TargetLoader
+	repo     probeRepository
+	client   *http.Client
+	ownerID  string
+	now      func() time.Time
 
 	adapterFor      func(Snapshot, *http.Client) (Adapter, error)
 	ping            func(context.Context, *http.Client, string, time.Duration) PingResult
@@ -71,16 +81,19 @@ type Scheduler struct {
 	renewInterval time.Duration
 }
 
-func NewScheduler(setting publicstatusprobesetting.Setting, loader TargetLoader, repository probeRepository, client *http.Client) (*Scheduler, error) {
+func NewScheduler(provider SettingProvider, loader TargetLoader, repository probeRepository, client *http.Client) (*Scheduler, error) {
+	if provider == nil {
+		return nil, codedError(ErrorInvalidTarget)
+	}
+	setting := provider.CurrentSetting()
 	if setting.Interval != time.Minute || setting.Concurrency < 1 || setting.Concurrency > 20 || setting.RetentionDays < 1 || setting.RetentionDays > 30 {
 		return nil, codedError(ErrorInvalidTarget)
 	}
 	if loader == nil || repository == nil {
 		return nil, codedError(ErrorInvalidTarget)
 	}
-	leaseDuration := maxDuration(setting.PingTimeout, setting.ChatTimeout) + leaseSafetyMargin
 	return &Scheduler{
-		setting:         setting,
+		provider:        provider,
 		loader:          loader,
 		repo:            repository,
 		client:          client,
@@ -89,17 +102,12 @@ func NewScheduler(setting publicstatusprobesetting.Setting, loader TargetLoader,
 		adapterFor:      AdapterFor,
 		ping:            Ping,
 		runConversation: RunConversation,
-		renewInterval:   minDuration(leaseDuration/3, 20*time.Second),
 	}, nil
 }
 
-func Start(ctx context.Context, setting publicstatusprobesetting.Setting) <-chan struct{} {
+func Start(ctx context.Context, provider SettingProvider) <-chan struct{} {
 	done := make(chan struct{})
-	if !setting.Enabled || len(setting.Targets) == 0 {
-		close(done)
-		return done
-	}
-	scheduler, err := NewScheduler(setting, NewDBTargetLoader(model.DB), modelProbeRepository{}, NewHTTPClient())
+	scheduler, err := NewScheduler(provider, NewDBTargetLoader(model.DB), modelProbeRepository{}, NewHTTPClient())
 	if err != nil {
 		common.SysLog("public status probe scheduler disabled: invalid configuration")
 		close(done)
@@ -118,7 +126,7 @@ func (scheduler *Scheduler) Run(ctx context.Context) {
 	}
 	for {
 		now := scheduler.now().UTC()
-		next := nextProbeSlot(now, scheduler.setting.Interval)
+		next := nextProbeSlot(now, time.Minute)
 		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-ctx.Done():
@@ -142,10 +150,18 @@ func (scheduler *Scheduler) runSlot(ctx context.Context, slot time.Time) bool {
 	}
 	defer scheduler.running.Store(false)
 
-	slot = slot.UTC().Truncate(scheduler.setting.Interval)
-	semaphore := make(chan struct{}, scheduler.setting.Concurrency)
+	setting := cloneSetting(scheduler.provider.CurrentSetting())
+	slot = slot.UTC().Truncate(time.Minute)
+	if !setting.Enabled || len(setting.Targets) == 0 {
+		if ctx.Err() == nil {
+			scheduler.runRetention(slot, setting.RetentionDays)
+		}
+		return true
+	}
+
+	semaphore := make(chan struct{}, setting.Concurrency)
 	var waitGroup sync.WaitGroup
-	for _, configuredTarget := range scheduler.setting.Targets {
+	for _, configuredTarget := range setting.Targets {
 		target := configuredTarget
 		waitGroup.Add(1)
 		go func() {
@@ -156,17 +172,17 @@ func (scheduler *Scheduler) runSlot(ctx context.Context, slot time.Time) bool {
 			case <-ctx.Done():
 				return
 			}
-			scheduler.probeTarget(ctx, target, slot)
+			scheduler.probeTarget(ctx, target, slot, setting)
 		}()
 	}
 	waitGroup.Wait()
 	if ctx.Err() == nil {
-		scheduler.runRetention(slot)
+		scheduler.runRetention(slot, setting.RetentionDays)
 	}
 	return true
 }
 
-func (scheduler *Scheduler) probeTarget(ctx context.Context, target publicstatusprobesetting.Target, slot time.Time) {
+func (scheduler *Scheduler) probeTarget(ctx context.Context, target publicstatusprobesetting.Target, slot time.Time, setting publicstatusprobesetting.Setting) {
 	slotUnix := slot.Unix()
 	exists, err := scheduler.repo.ResultExists(target.Key, slotUnix)
 	if err != nil || exists {
@@ -174,14 +190,18 @@ func (scheduler *Scheduler) probeTarget(ctx context.Context, target publicstatus
 	}
 
 	now := scheduler.now().UTC()
-	leaseDuration := maxDuration(scheduler.setting.PingTimeout, scheduler.setting.ChatTimeout) + leaseSafetyMargin
+	leaseDuration := maxDuration(setting.PingTimeout, setting.ChatTimeout) + leaseSafetyMargin
 	acquired, err := scheduler.repo.AcquireLease(target.Key, scheduler.ownerID, now.Unix(), now.Add(leaseDuration).Unix())
 	if err != nil || !acquired {
 		return
 	}
 	probeContext, cancelProbe := context.WithCancel(ctx)
 	renewalDone := make(chan struct{})
-	go scheduler.renewLease(probeContext, cancelProbe, renewalDone, target.Key, leaseDuration)
+	renewInterval := scheduler.renewInterval
+	if renewInterval <= 0 {
+		renewInterval = minDuration(leaseDuration/3, 20*time.Second)
+	}
+	go scheduler.renewLease(probeContext, cancelProbe, renewalDone, target.Key, leaseDuration, renewInterval)
 	defer func() {
 		cancelProbe()
 		<-renewalDone
@@ -216,10 +236,10 @@ func (scheduler *Scheduler) probeTarget(ctx context.Context, target publicstatus
 	pingResult := make(chan PingResult, 1)
 	conversationResult := make(chan ConversationResult, 1)
 	go func() {
-		pingResult <- scheduler.ping(probeContext, scheduler.client, loaded.Snapshot.BaseURL, scheduler.setting.PingTimeout)
+		pingResult <- scheduler.ping(probeContext, scheduler.client, loaded.Snapshot.BaseURL, setting.PingTimeout)
 	}()
 	go func() {
-		conversationResult <- scheduler.runConversation(probeContext, adapter, loaded.Snapshot, scheduler.setting.ChatTimeout, scheduler.setting.DegradedLatency)
+		conversationResult <- scheduler.runConversation(probeContext, adapter, loaded.Snapshot, setting.ChatTimeout, setting.DegradedLatency)
 	}()
 
 	combined := CombineResults(<-pingResult, <-conversationResult)
@@ -229,9 +249,9 @@ func (scheduler *Scheduler) probeTarget(ctx context.Context, target publicstatus
 	scheduler.storeLoadedResult(probeContext, loaded, slotUnix, combined)
 }
 
-func (scheduler *Scheduler) renewLease(ctx context.Context, cancel context.CancelFunc, done chan<- struct{}, targetKey string, leaseDuration time.Duration) {
+func (scheduler *Scheduler) renewLease(ctx context.Context, cancel context.CancelFunc, done chan<- struct{}, targetKey string, leaseDuration, renewInterval time.Duration) {
 	defer close(done)
-	ticker := time.NewTicker(scheduler.renewInterval)
+	ticker := time.NewTicker(renewInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -250,7 +270,7 @@ func (scheduler *Scheduler) renewLease(ctx context.Context, cancel context.Cance
 
 func (scheduler *Scheduler) completeLease(targetKey string) {
 	now := scheduler.now().UTC()
-	holdUntil := nextProbeSlot(now, scheduler.setting.Interval)
+	holdUntil := nextProbeSlot(now, time.Minute)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_, _ = scheduler.repo.CompleteLease(ctx, targetKey, scheduler.ownerID, now.Unix(), holdUntil.Unix())
@@ -303,7 +323,7 @@ func (scheduler *Scheduler) store(ctx context.Context, result *model.PublicStatu
 	_, _ = scheduler.repo.CreateResult(ctx, result, scheduler.ownerID, scheduler.now().Unix())
 }
 
-func (scheduler *Scheduler) runRetention(now time.Time) {
+func (scheduler *Scheduler) runRetention(now time.Time, retentionDays int) {
 	nowUnix := now.Unix()
 	last := scheduler.lastRetention.Load()
 	if last != 0 && nowUnix-last < int64(retentionInterval/time.Second) {
@@ -312,10 +332,15 @@ func (scheduler *Scheduler) runRetention(now time.Time) {
 	if !scheduler.lastRetention.CompareAndSwap(last, nowUnix) {
 		return
 	}
-	cutoff := now.Add(-time.Duration(scheduler.setting.RetentionDays) * 24 * time.Hour).Unix()
+	cutoff := now.Add(-time.Duration(retentionDays) * 24 * time.Hour).Unix()
 	if _, err := scheduler.repo.DeleteBefore(cutoff); err != nil {
 		common.SysLog(fmt.Sprintf("public status probe retention failed at %d", nowUnix))
 	}
+}
+
+func cloneSetting(setting publicstatusprobesetting.Setting) publicstatusprobesetting.Setting {
+	setting.Targets = append([]publicstatusprobesetting.Target(nil), setting.Targets...)
+	return setting
 }
 
 func maxDuration(left, right time.Duration) time.Duration {

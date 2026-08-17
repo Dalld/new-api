@@ -88,11 +88,7 @@ func main() {
 	}()
 
 	probeContext, cancelPublicStatusProbe := context.WithCancel(context.Background())
-	probeSetting := publicstatusprobesetting.CurrentSetting()
-	if probeSetting.Enabled && len(probeSetting.Targets) > 0 {
-		common.SysLog(fmt.Sprintf("public status probe scheduler enabled for %d targets", len(probeSetting.Targets)))
-	}
-	publicStatusProbeDone := publicstatusprobe.Start(probeContext, probeSetting)
+	publicStatusProbeDone := publicstatusprobe.Start(probeContext, publicstatusprobe.RuntimeSettingProvider{})
 	publicStatusProbeStopped = false
 	publicStatusProbeWaited := false
 	waitForPublicStatusProbe := func() {

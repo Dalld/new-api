@@ -20,6 +20,36 @@ func (function targetLoaderFunc) Load(ctx context.Context, target publicstatuspr
 	return function(ctx, target)
 }
 
+type fakeSettingProvider struct {
+	mutex   sync.Mutex
+	setting publicstatusprobesetting.Setting
+	calls   int
+}
+
+func (provider *fakeSettingProvider) CurrentSetting() publicstatusprobesetting.Setting {
+	provider.mutex.Lock()
+	defer provider.mutex.Unlock()
+	provider.calls++
+	return cloneTestSetting(provider.setting)
+}
+
+func (provider *fakeSettingProvider) set(setting publicstatusprobesetting.Setting) {
+	provider.mutex.Lock()
+	provider.setting = cloneTestSetting(setting)
+	provider.mutex.Unlock()
+}
+
+func (provider *fakeSettingProvider) callCount() int {
+	provider.mutex.Lock()
+	defer provider.mutex.Unlock()
+	return provider.calls
+}
+
+func cloneTestSetting(setting publicstatusprobesetting.Setting) publicstatusprobesetting.Setting {
+	setting.Targets = append([]publicstatusprobesetting.Target(nil), setting.Targets...)
+	return setting
+}
+
 type fakeLease struct {
 	owner string
 	until int64
@@ -152,7 +182,8 @@ func loadedSchedulerTarget(target publicstatusprobesetting.Target) LoadedTarget 
 
 func newTestScheduler(t *testing.T, setting publicstatusprobesetting.Setting, loader TargetLoader, repository probeRepository) *Scheduler {
 	t.Helper()
-	scheduler, err := NewScheduler(setting, loader, repository, nil)
+	provider := &fakeSettingProvider{setting: cloneTestSetting(setting)}
+	scheduler, err := NewScheduler(provider, loader, repository, nil)
 	require.NoError(t, err)
 	scheduler.adapterFor = func(Snapshot, *http.Client) (Adapter, error) {
 		return adapterFunc(func(context.Context, Snapshot, Challenge) (string, error) { return "unused", nil }), nil
@@ -166,6 +197,160 @@ func newTestScheduler(t *testing.T, setting publicstatusprobesetting.Setting, lo
 		return ConversationResult{State: StateOperational, LatencyMS: &latency}
 	}
 	return scheduler
+}
+
+func newTestSchedulerWithProvider(t *testing.T, provider SettingProvider, loader TargetLoader, repository probeRepository) *Scheduler {
+	t.Helper()
+	scheduler, err := NewScheduler(provider, loader, repository, nil)
+	require.NoError(t, err)
+	scheduler.adapterFor = func(Snapshot, *http.Client) (Adapter, error) {
+		return adapterFunc(func(context.Context, Snapshot, Challenge) (string, error) { return "unused", nil }), nil
+	}
+	scheduler.ping = func(context.Context, *http.Client, string, time.Duration) PingResult {
+		latency := int64(10)
+		return PingResult{Reachable: true, LatencyMS: &latency}
+	}
+	scheduler.runConversation = func(context.Context, Adapter, Snapshot, time.Duration, time.Duration) ConversationResult {
+		latency := int64(20)
+		return ConversationResult{State: StateOperational, LatencyMS: &latency}
+	}
+	return scheduler
+}
+
+func TestSchedulerReadsOneSettingSnapshotPerSlot(t *testing.T) {
+	first := schedulerSetting(1, 1)
+	second := schedulerSetting(1, 1)
+	second.Targets[0].Key = "target-next-slot"
+	second.PingTimeout = 2 * time.Second
+	second.ChatTimeout = 3 * time.Second
+	second.DegradedLatency = 750 * time.Millisecond
+	provider := &fakeSettingProvider{setting: first}
+	repository := newFakeProbeRepository()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	loader := targetLoaderFunc(func(_ context.Context, target publicstatusprobesetting.Target) (LoadedTarget, error) {
+		close(entered)
+		<-release
+		return loadedSchedulerTarget(target), nil
+	})
+	scheduler := newTestSchedulerWithProvider(t, provider, loader, repository)
+	var pingTimeout time.Duration
+	var chatTimeout time.Duration
+	var degradedLatency time.Duration
+	scheduler.ping = func(_ context.Context, _ *http.Client, _ string, timeout time.Duration) PingResult {
+		pingTimeout = timeout
+		latency := int64(10)
+		return PingResult{Reachable: true, LatencyMS: &latency}
+	}
+	scheduler.runConversation = func(_ context.Context, _ Adapter, _ Snapshot, timeout, degraded time.Duration) ConversationResult {
+		chatTimeout = timeout
+		degradedLatency = degraded
+		latency := int64(20)
+		return ConversationResult{State: StateOperational, LatencyMS: &latency}
+	}
+
+	done := make(chan bool, 1)
+	go func() { done <- scheduler.runSlot(context.Background(), time.Unix(1_700_000_040, 0)) }()
+	<-entered
+	provider.set(second)
+	close(release)
+	require.True(t, <-done)
+
+	assert.Equal(t, 2, provider.callCount(), "constructor plus one slot snapshot")
+	require.Len(t, repository.created, 1)
+	assert.Equal(t, "target-a", repository.created[0].TargetKey)
+	assert.Equal(t, first.PingTimeout, pingTimeout)
+	assert.Equal(t, first.ChatTimeout, chatTimeout)
+	assert.Equal(t, first.DegradedLatency, degradedLatency)
+}
+
+func TestSchedulerAppliesSettingChangesOnNextSlot(t *testing.T) {
+	first := schedulerSetting(1, 1)
+	second := schedulerSetting(1, 1)
+	second.Targets[0].Key = "target-next-slot"
+	provider := &fakeSettingProvider{setting: first}
+	repository := newFakeProbeRepository()
+	loader := targetLoaderFunc(func(_ context.Context, target publicstatusprobesetting.Target) (LoadedTarget, error) {
+		return loadedSchedulerTarget(target), nil
+	})
+	scheduler := newTestSchedulerWithProvider(t, provider, loader, repository)
+
+	assert.True(t, scheduler.runSlot(context.Background(), time.Unix(1_700_000_040, 0)))
+	provider.set(second)
+	assert.True(t, scheduler.runSlot(context.Background(), time.Unix(1_700_000_100, 0)))
+
+	require.Len(t, repository.created, 2)
+	assert.Equal(t, "target-a", repository.created[0].TargetKey)
+	assert.Equal(t, "target-next-slot", repository.created[1].TargetKey)
+}
+
+func TestSchedulerKeepsRunningAndRetainsWhileDisabledOrEmpty(t *testing.T) {
+	setting := schedulerSetting(0, 1)
+	setting.Enabled = false
+	provider := &fakeSettingProvider{setting: setting}
+	repository := newFakeProbeRepository()
+	loaderCalls := 0
+	loader := targetLoaderFunc(func(_ context.Context, target publicstatusprobesetting.Target) (LoadedTarget, error) {
+		loaderCalls++
+		return loadedSchedulerTarget(target), nil
+	})
+	scheduler := newTestSchedulerWithProvider(t, provider, loader, repository)
+
+	assert.True(t, scheduler.runSlot(context.Background(), time.Unix(1_700_000_040, 0)))
+	require.Len(t, repository.deleteCalls, 1)
+	assert.Equal(t, 0, loaderCalls)
+
+	setting.Enabled = true
+	setting.Targets = []publicstatusprobesetting.Target{schedulerSetting(1, 1).Targets[0]}
+	provider.set(setting)
+	assert.True(t, scheduler.runSlot(context.Background(), time.Unix(1_700_000_100, 0)))
+	assert.Equal(t, 1, loaderCalls)
+
+	setting.Targets = nil
+	setting.RetentionDays = 3
+	provider.set(setting)
+	emptySlot := time.Unix(1_700_000_040, 0).Add(12 * time.Hour)
+	assert.True(t, scheduler.runSlot(context.Background(), emptySlot))
+	assert.Equal(t, 1, loaderCalls)
+	require.Len(t, repository.deleteCalls, 2)
+	assert.Equal(t, emptySlot.Add(-3*24*time.Hour).Unix(), repository.deleteCalls[1])
+}
+
+func TestStartKeepsDisabledSchedulerAlive(t *testing.T) {
+	setting := schedulerSetting(0, 1)
+	setting.Enabled = false
+	provider := &fakeSettingProvider{setting: setting}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := Start(ctx, provider)
+
+	select {
+	case <-done:
+		t.Fatal("disabled scheduler stopped before cancellation")
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("disabled scheduler did not stop after cancellation")
+	}
+}
+
+func TestRuntimeSettingProviderFiltersDisabledTargets(t *testing.T) {
+	previous := publicstatusprobesetting.CurrentDocument()
+	t.Cleanup(func() {
+		require.NoError(t, publicstatusprobesetting.PublishDocument(previous))
+	})
+	document := publicstatusprobesetting.DefaultDocument()
+	document.Enabled = true
+	document.Targets = schedulerSetting(2, 1).Targets
+	document.Targets[0].Enabled = true
+	document.Targets[1].Enabled = false
+	require.NoError(t, publicstatusprobesetting.PublishDocument(document))
+
+	setting := (RuntimeSettingProvider{}).CurrentSetting()
+	require.Len(t, setting.Targets, 1)
+	assert.Equal(t, "target-a", setting.Targets[0].Key)
 }
 
 func TestSchedulerRacingInstancesProbeOneTargetSlotOnce(t *testing.T) {
@@ -301,9 +486,9 @@ func TestSchedulerRetentionRunsAtMostEveryTwelveHours(t *testing.T) {
 	}), repository)
 	base := time.Unix(1_700_000_040, 0).UTC()
 
-	scheduler.runRetention(base)
-	scheduler.runRetention(base.Add(11*time.Hour + 59*time.Minute))
-	scheduler.runRetention(base.Add(12 * time.Hour))
+	scheduler.runRetention(base, setting.RetentionDays)
+	scheduler.runRetention(base.Add(11*time.Hour+59*time.Minute), setting.RetentionDays)
+	scheduler.runRetention(base.Add(12*time.Hour), setting.RetentionDays)
 
 	require.Len(t, repository.deleteCalls, 2)
 	assert.Equal(t, base.Add(-7*24*time.Hour).Unix(), repository.deleteCalls[0])
