@@ -67,11 +67,19 @@ func DecodeDocument(raw string) (Document, error) {
 			return Document{}, invalidConfigurationError()
 		}
 	}
-
-	targetData := fields["targets"]
-	if common.GetJsonType(targetData) != "array" {
+	if common.GetJsonType(fields["schema_version"]) != "number" ||
+		common.GetJsonType(fields["version"]) != "number" ||
+		common.GetJsonType(fields["enabled"]) != "boolean" ||
+		common.GetJsonType(fields["ping_timeout_seconds"]) != "number" ||
+		common.GetJsonType(fields["chat_timeout_seconds"]) != "number" ||
+		common.GetJsonType(fields["degraded_latency_ms"]) != "number" ||
+		common.GetJsonType(fields["concurrency"]) != "number" ||
+		common.GetJsonType(fields["retention_days"]) != "number" ||
+		common.GetJsonType(fields["targets"]) != "array" {
 		return Document{}, invalidConfigurationError()
 	}
+
+	targetData := fields["targets"]
 	var targetFields []map[string]json.RawMessage
 	if err := common.Unmarshal(targetData, &targetFields); err != nil || len(targetFields) > maxTargets {
 		return Document{}, invalidConfigurationError()
@@ -88,6 +96,9 @@ func DecodeDocument(raw string) (Document, error) {
 			default:
 				return Document{}, invalidConfigurationError()
 			}
+		}
+		if !validTargetJSONFieldTypes(fields) {
+			return Document{}, invalidConfigurationError()
 		}
 
 		encoded, err := common.Marshal(fields)

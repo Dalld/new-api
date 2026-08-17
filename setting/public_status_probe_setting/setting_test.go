@@ -281,6 +281,33 @@ func TestLoadRejectsInvalidTargetSelectors(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsNullTargetFields(t *testing.T) {
+	const target = `[{"enabled":true,"key":"a","group":"g","display_name":"A","model":"m","protocol":"openai_chat","channel_id":1,"key_index":0}]`
+	tests := []struct {
+		name string
+		old  string
+	}{
+		{name: "enabled", old: `"enabled":true`},
+		{name: "key", old: `"key":"a"`},
+		{name: "group", old: `"group":"g"`},
+		{name: "display name", old: `"display_name":"A"`},
+		{name: "model", old: `"model":"m"`},
+		{name: "protocol", old: `"protocol":"openai_chat"`},
+		{name: "channel id", old: `"channel_id":1`},
+		{name: "key index", old: `"key_index":0`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withNull := strings.Replace(target, tt.old, strings.Split(tt.old, ":")[0]+":null", 1)
+			require.NotEqual(t, target, withNull)
+			_, err := loadWithEnvironment(map[string]string{envTargets: withNull})
+			require.Error(t, err)
+			assert.Equal(t, invalidConfigurationErrorText, err.Error())
+		})
+	}
+}
+
 func TestLoadRejectsUnknownTargetFieldsWithoutEchoingValues(t *testing.T) {
 	const marker = "unknown-field-secret-marker"
 	tests := []struct {

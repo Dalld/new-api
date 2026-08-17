@@ -168,6 +168,9 @@ func targetSetting(lookup func(string) (string, bool)) ([]Target, error) {
 				return nil, errors.New(invalidConfigurationErrorText)
 			}
 		}
+		if !validTargetJSONFieldTypes(fields) {
+			return nil, errors.New(invalidConfigurationErrorText)
+		}
 
 		encoded, err := common.Marshal(fields)
 		if err != nil {
@@ -229,6 +232,24 @@ func targetSetting(lookup func(string) (string, bool)) ([]Target, error) {
 
 func validTargetString(value string, maximumRunes int) bool {
 	return value != "" && utf8.ValidString(value) && utf8.RuneCountInString(value) <= maximumRunes
+}
+
+func validTargetJSONFieldTypes(fields map[string]json.RawMessage) bool {
+	if common.GetJsonType(fields["key"]) != "string" ||
+		common.GetJsonType(fields["group"]) != "string" ||
+		common.GetJsonType(fields["display_name"]) != "string" ||
+		common.GetJsonType(fields["model"]) != "string" ||
+		common.GetJsonType(fields["protocol"]) != "string" ||
+		common.GetJsonType(fields["channel_id"]) != "number" {
+		return false
+	}
+	if value, exists := fields["enabled"]; exists && common.GetJsonType(value) != "boolean" {
+		return false
+	}
+	if value, exists := fields["key_index"]; exists && common.GetJsonType(value) != "number" {
+		return false
+	}
+	return true
 }
 
 func validProtocol(value Protocol) bool {

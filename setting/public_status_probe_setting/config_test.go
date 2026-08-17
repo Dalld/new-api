@@ -83,6 +83,44 @@ func TestDecodeDocumentRejectsInvalidSchemaVersionAndVersion(t *testing.T) {
 	}
 }
 
+func TestDecodeDocumentRejectsNullScalarFields(t *testing.T) {
+	raw, err := EncodeDocument(validDocument())
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{name: "schema version", old: `"schema_version":1`, new: `"schema_version":null`},
+		{name: "version", old: `"version":2`, new: `"version":null`},
+		{name: "enabled", old: `"enabled":true`, new: `"enabled":null`},
+		{name: "ping timeout", old: `"ping_timeout_seconds":8`, new: `"ping_timeout_seconds":null`},
+		{name: "chat timeout", old: `"chat_timeout_seconds":45`, new: `"chat_timeout_seconds":null`},
+		{name: "degraded latency", old: `"degraded_latency_ms":6000`, new: `"degraded_latency_ms":null`},
+		{name: "concurrency", old: `"concurrency":5`, new: `"concurrency":null`},
+		{name: "retention", old: `"retention_days":7`, new: `"retention_days":null`},
+		{name: "target enabled", old: `"targets":[{"enabled":true`, new: `"targets":[{"enabled":null`},
+		{name: "target key", old: `"key":"target-b"`, new: `"key":null`},
+		{name: "target group", old: `"group":"group-b"`, new: `"group":null`},
+		{name: "target display name", old: `"display_name":"Target B"`, new: `"display_name":null`},
+		{name: "target model", old: `"model":"model-b"`, new: `"model":null`},
+		{name: "target protocol", old: `"protocol":"openai_responses"`, new: `"protocol":null`},
+		{name: "target channel id", old: `"channel_id":2`, new: `"channel_id":null`},
+		{name: "target key index", old: `"key_index":1`, new: `"key_index":null`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withNull := strings.Replace(raw, tt.old, tt.new, 1)
+			require.NotEqual(t, raw, withNull)
+			_, err := DecodeDocument(withNull)
+			require.Error(t, err)
+			assert.Equal(t, invalidConfigurationErrorText, err.Error())
+		})
+	}
+}
+
 func TestValidateAndNormalizeDocumentScalarBoundaries(t *testing.T) {
 	tests := []struct {
 		name    string
