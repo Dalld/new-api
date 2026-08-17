@@ -223,7 +223,7 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
-	if key == publicstatusprobesetting.OptionKey {
+	if isPublicStatusProbeOptionKey(key) {
 		_, err := publicstatusprobesetting.DecodeDocument(value)
 		return err
 	}
@@ -244,7 +244,7 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
-	if key == publicstatusprobesetting.OptionKey {
+	if isPublicStatusProbeOptionKey(key) {
 		return ErrPublicStatusProbeConfigRequiresCAS
 	}
 	if err := validateOptionValue(key, value); err != nil {
@@ -258,6 +258,9 @@ func UpdateOption(key string, value string) error {
 	if err := DB.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
 		return err
 	}
+	if isPublicStatusProbeOptionKey(option.Key) {
+		return ErrPublicStatusProbeConfigRequiresCAS
+	}
 	option.Value = value
 	// Save is a combination function.
 	// If save value does not contain primary key, it will execute Create,
@@ -266,7 +269,7 @@ func UpdateOption(key string, value string) error {
 		return err
 	}
 	// Update OptionMap
-	return updateOptionMap(key, value)
+	return updateOptionMap(option.Key, value)
 }
 
 // UpdateOptionsBulk persists multiple key/value pairs in a single database
@@ -278,10 +281,10 @@ func UpdateOptionsBulk(values map[string]string) error {
 	if len(values) == 0 {
 		return nil
 	}
-	if _, exists := values[publicstatusprobesetting.OptionKey]; exists {
-		return ErrPublicStatusProbeConfigRequiresCAS
-	}
 	for key, value := range values {
+		if isPublicStatusProbeOptionKey(key) {
+			return ErrPublicStatusProbeConfigRequiresCAS
+		}
 		if err := validateOptionValue(key, value); err != nil {
 			return err
 		}
@@ -291,6 +294,9 @@ func UpdateOptionsBulk(values map[string]string) error {
 			option := Option{Key: k}
 			if err := tx.FirstOrCreate(&option, Option{Key: k}).Error; err != nil {
 				return err
+			}
+			if isPublicStatusProbeOptionKey(option.Key) {
+				return ErrPublicStatusProbeConfigRequiresCAS
 			}
 			option.Value = v
 			if err := tx.Save(&option).Error; err != nil {
@@ -317,7 +323,7 @@ func updateOptionMap(key string, value string) (err error) {
 		common.OptionMapRWMutex.Unlock()
 		return nil
 	}
-	if key == publicstatusprobesetting.OptionKey {
+	if isPublicStatusProbeOptionKey(key) {
 		return ApplyPublicStatusProbeConfigOption(value)
 	}
 	common.OptionMapRWMutex.Lock()

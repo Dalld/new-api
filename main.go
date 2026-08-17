@@ -281,6 +281,13 @@ func initializePublicStatusProbeConfiguration() error {
 	invalidEnvironment, err := initializePublicStatusProbeConfigurationWith(
 		common.IsMasterNode,
 		model.GetPublicStatusProbeConfig,
+		func(document publicstatusprobesetting.Document) error {
+			raw, err := publicstatusprobesetting.EncodeDocument(document)
+			if err != nil {
+				return err
+			}
+			return model.ApplyPublicStatusProbeConfigOption(raw)
+		},
 		publicstatusprobesetting.LoadEnvironmentDocument,
 		model.EnsurePublicStatusProbeConfig,
 	)
@@ -293,12 +300,13 @@ func initializePublicStatusProbeConfiguration() error {
 func initializePublicStatusProbeConfigurationWith(
 	isMaster bool,
 	get func() (publicstatusprobesetting.Document, error),
+	apply func(publicstatusprobesetting.Document) error,
 	loadEnvironment func() (publicstatusprobesetting.Document, error),
 	ensure func(publicstatusprobesetting.Document) (publicstatusprobesetting.Document, bool, error),
 ) (invalidEnvironment bool, err error) {
-	_, err = get()
+	document, err := get()
 	if err == nil {
-		return false, nil
+		return false, apply(document)
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return false, err

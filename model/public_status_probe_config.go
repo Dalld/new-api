@@ -22,6 +22,10 @@ var (
 var publicStatusProbePublishMu sync.Mutex
 var publicStatusProbeConfigLoaded atomic.Bool
 
+func isPublicStatusProbeOptionKey(key string) bool {
+	return strings.EqualFold(strings.TrimSpace(key), publicstatusprobesetting.OptionKey)
+}
+
 func EnsurePublicStatusProbeConfig(bootstrap publicstatusprobesetting.Document) (publicstatusprobesetting.Document, bool, error) {
 	db := publicStatusProbeDB(DB)
 	existing, existingRaw, err := getPublicStatusProbeConfig(db)
@@ -205,9 +209,7 @@ func publishPublicStatusProbeConfig(raw string) (bool, error) {
 	setPublicStatusProbeOptionMap(raw)
 	publicStatusProbeConfigLoaded.Store(true)
 	publicStatusProbePublishMu.Unlock()
-	if drain {
-		publicstatusprobesetting.DrainPublishNotifications()
-	}
+	drain()
 	return true, nil
 }
 

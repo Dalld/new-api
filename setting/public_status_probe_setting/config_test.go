@@ -437,7 +437,7 @@ func TestStageDocumentDefersHookUntilDrain(t *testing.T) {
 	document.Version = 8
 	drain, err := StageDocument(document)
 	require.NoError(t, err)
-	assert.True(t, drain)
+	require.NotNil(t, drain)
 	assert.Equal(t, document, CurrentDocument())
 	select {
 	case <-called:
@@ -445,7 +445,7 @@ func TestStageDocumentDefersHookUntilDrain(t *testing.T) {
 	default:
 	}
 
-	DrainPublishNotifications()
+	drain()
 	assert.Equal(t, document.Version, receiveVersion(t, called))
 }
 
@@ -458,16 +458,51 @@ func TestStageDocumentQueuesEveryNotificationForOneDrain(t *testing.T) {
 	first.Version = 9
 	drain, err := StageDocument(first)
 	require.NoError(t, err)
-	assert.True(t, drain)
+	require.NotNil(t, drain)
 	second := validDocument()
 	second.Version = 10
-	drain, err = StageDocument(second)
+	queuedDrain, err := StageDocument(second)
 	require.NoError(t, err)
-	assert.False(t, drain)
+	require.NotNil(t, queuedDrain)
+	queuedDrain()
+	select {
+	case <-versions:
+		t.Fatal("non-owner drain closure dispatched notifications")
+	default:
+	}
 
-	DrainPublishNotifications()
+	drain()
 	assert.Equal(t, first.Version, receiveVersion(t, versions))
 	assert.Equal(t, second.Version, receiveVersion(t, versions))
+}
+
+func TestStageDocumentDrainClosureIsConcurrentAndSingleUse(t *testing.T) {
+	preserveRuntimeState(t)
+	versions := make(chan int64, 2)
+	SetPublishHook(func(version int64) { versions <- version })
+
+	document := validDocument()
+	document.Version = 12
+	drain, err := StageDocument(document)
+	require.NoError(t, err)
+	require.NotNil(t, drain)
+
+	var callers sync.WaitGroup
+	for range 8 {
+		callers.Add(1)
+		go func() {
+			defer callers.Done()
+			drain()
+		}()
+	}
+	callers.Wait()
+	drain()
+	assert.Equal(t, document.Version, receiveVersion(t, versions))
+	select {
+	case version := <-versions:
+		t.Fatalf("drain closure dispatched duplicate version %d", version)
+	case <-time.After(20 * time.Millisecond):
+	}
 }
 
 func TestSetPublishHookReturnsPreviousHook(t *testing.T) {

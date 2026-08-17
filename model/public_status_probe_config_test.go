@@ -106,6 +106,72 @@ func TestGenericOptionWritersRejectPublicStatusProbeConfigBeforeDBWrite(t *testi
 	assert.Equal(t, "before", guarded.Value)
 }
 
+func TestGenericOptionWritersRejectEquivalentPublicStatusProbeKeysBeforeDBWrite(t *testing.T) {
+	keys := []string{
+		strings.ToLower(publicstatusprobesetting.OptionKey),
+		"pUbLiCsTaTuSpRoBeCoNfIg",
+		" \t" + publicstatusprobesetting.OptionKey + "\r\n",
+	}
+	for _, key := range keys {
+		t.Run(fmt.Sprintf("%q", key), func(t *testing.T) {
+			db := usePublicStatusProbeConfigDB(t)
+			useInitialPublicStatusProbeRuntime(t)
+			_, _, err := EnsurePublicStatusProbeConfig(publicStatusProbeDocument(6))
+			require.NoError(t, err)
+			rawBefore := requirePublicStatusProbeOptionRaw(t, db)
+			require.NoError(t, db.Create(&Option{Key: "test.equivalent-bulk-guard", Value: "before"}).Error)
+
+			require.ErrorIs(t, UpdateOption(key, "not-json"), ErrPublicStatusProbeConfigRequiresCAS)
+			require.ErrorIs(t, UpdateOptionsBulk(map[string]string{
+				key:                          "not-json",
+				"test.equivalent-bulk-guard": "after",
+			}), ErrPublicStatusProbeConfigRequiresCAS)
+			assert.Equal(t, rawBefore, requirePublicStatusProbeOptionRaw(t, db))
+			var guarded Option
+			require.NoError(t, db.Where("key = ?", "test.equivalent-bulk-guard").Take(&guarded).Error)
+			assert.Equal(t, "before", guarded.Value)
+		})
+	}
+}
+
+func TestGenericOptionWritersRejectCanonicalAuthoritativeReadBeforeSave(t *testing.T) {
+	for _, bulk := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bulk=%t", bulk), func(t *testing.T) {
+			db := usePublicStatusProbeConfigDB(t)
+			useInitialPublicStatusProbeRuntime(t)
+			_, _, err := EnsurePublicStatusProbeConfig(publicStatusProbeDocument(7))
+			require.NoError(t, err)
+			rawBefore := requirePublicStatusProbeOptionRaw(t, db)
+			const alias = "simulated-collation-alias"
+			const sibling = "test.authoritative-read-guard"
+			require.NoError(t, db.Create(&Option{Key: sibling, Value: "before"}).Error)
+			require.NoError(t, db.Callback().Query().After("gorm:query").Register("test:canonical-option-readback", func(tx *gorm.DB) {
+				option, ok := tx.Statement.Dest.(*Option)
+				if !ok || option.Key != alias {
+					return
+				}
+				option.Key = publicstatusprobesetting.OptionKey
+				option.Value = rawBefore
+				tx.RowsAffected = 1
+			}))
+
+			if bulk {
+				err = UpdateOptionsBulk(map[string]string{alias: "after", sibling: "after"})
+			} else {
+				err = UpdateOption(alias, "after")
+			}
+			require.ErrorIs(t, err, ErrPublicStatusProbeConfigRequiresCAS)
+			assert.Equal(t, rawBefore, requirePublicStatusProbeOptionRaw(t, db))
+			var guarded Option
+			require.NoError(t, db.Where("key = ?", sibling).Take(&guarded).Error)
+			assert.Equal(t, "before", guarded.Value)
+			var aliases int64
+			require.NoError(t, db.Model(&Option{}).Where("key = ?", alias).Count(&aliases).Error)
+			assert.Zero(t, aliases)
+		})
+	}
+}
+
 func publicStatusProbeDocument(marker int) publicstatusprobesetting.Document {
 	document := publicstatusprobesetting.DefaultDocument()
 	document.Enabled = true
@@ -377,11 +443,13 @@ func TestUpdateOptionMapStrictlyAppliesPublicStatusProbeConfig(t *testing.T) {
 	versions := make(chan int64, 1)
 	publicstatusprobesetting.SetPublishHook(func(version int64) { versions <- version })
 
-	require.NoError(t, updateOptionMap(publicstatusprobesetting.OptionKey, raw))
+	require.NoError(t, updateOptionMap(strings.ToLower(publicstatusprobesetting.OptionKey), raw))
 	assert.Equal(t, document, publicstatusprobesetting.CurrentDocument())
 	assert.Equal(t, document.Version, requirePublishedVersion(t, versions))
 	common.OptionMapRWMutex.RLock()
 	assert.Equal(t, raw, common.OptionMap[publicstatusprobesetting.OptionKey])
+	_, aliasExists := common.OptionMap[strings.ToLower(publicstatusprobesetting.OptionKey)]
+	assert.False(t, aliasExists)
 	common.OptionMapRWMutex.RUnlock()
 
 	invalid := `{"schema_version":1,"version":8,"enabled":true,"ping_timeout_seconds":8,"chat_timeout_seconds":45,"degraded_latency_ms":6000,"concurrency":5,"retention_days":7,"targets":[],"secret":"hidden"}`
@@ -519,7 +587,12 @@ func TestPublicStatusProbeHookCanReenterApplyWithoutDeadlockOrLostNotification(t
 	case <-time.After(time.Second):
 		t.Fatal("Apply deadlocked when its hook reentered Apply")
 	}
-	require.NoError(t, <-reentrant)
+	select {
+	case err := <-reentrant:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for reentrant Apply")
+	}
 	assert.Equal(t, int64(2), requirePublishedVersion(t, versions))
 	assert.Equal(t, int64(3), requirePublishedVersion(t, versions))
 	assert.Equal(t, third, publicstatusprobesetting.CurrentDocument())
@@ -561,7 +634,12 @@ func TestPublicStatusProbeHookCanReenterCASWithoutDeadlockOrVersionRegression(t 
 	case <-time.After(time.Second):
 		t.Fatal("CAS deadlocked when its hook reentered CAS")
 	}
-	require.NoError(t, <-reentrant)
+	select {
+	case err := <-reentrant:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for reentrant CAS")
+	}
 	assert.Equal(t, saved.Version+1, requirePublishedVersion(t, versions))
 	assert.Equal(t, saved.Version+2, requirePublishedVersion(t, versions))
 	assert.Equal(t, saved.Version+2, publicstatusprobesetting.CurrentDocument().Version)
@@ -597,6 +675,27 @@ func TestPublicStatusProbeDBOperationsNeverLogRawJSON(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.NotContains(t, output.String(), "raw-json-marker")
+}
+
+func TestPublicStatusProbeSilentSessionPreservesTransactionRollback(t *testing.T) {
+	db := usePublicStatusProbeConfigDB(t)
+	document := publicStatusProbeDocument(42)
+	raw, err := publicstatusprobesetting.EncodeDocument(document)
+	require.NoError(t, err)
+	rollback := errors.New("rollback public status probe create")
+
+	err = db.Transaction(func(tx *gorm.DB) error {
+		result := createPublicStatusProbeConfig(tx, &Option{
+			Key:   publicstatusprobesetting.OptionKey,
+			Value: raw,
+		})
+		require.NoError(t, result.Error)
+		return rollback
+	})
+	require.ErrorIs(t, err, rollback)
+	var count int64
+	require.NoError(t, db.Model(&Option{}).Where("key = ?", publicstatusprobesetting.OptionKey).Count(&count).Error)
+	assert.Zero(t, count)
 }
 
 func TestPublicStatusProbePersistenceSQLIsPortable(t *testing.T) {

@@ -195,19 +195,17 @@ func PublishDocument(document Document) error {
 	if err != nil {
 		return err
 	}
-	if drain {
-		DrainPublishNotifications()
-	}
+	drain()
 	return nil
 }
 
 // StageDocument updates the runtime snapshot and queues its notification. The
-// caller that receives drain=true must call DrainPublishNotifications after
-// releasing any lock that an external publish hook may reenter.
-func StageDocument(document Document) (drain bool, err error) {
+// returned closure is safe to call more than once and must be invoked after the
+// caller releases any lock that an external publish hook may reenter.
+func StageDocument(document Document) (drain func(), err error) {
 	normalized, err := ValidateAndNormalizeDocument(document)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 
 	publishMu.Lock()
@@ -218,14 +216,17 @@ func StageDocument(document Document) (drain bool, err error) {
 	publishQueue = append(publishQueue, publishNotification{version: normalized.Version, hook: hook})
 	if publishDispatching {
 		publishMu.Unlock()
-		return false, nil
+		return func() {}, nil
 	}
 	publishDispatching = true
 	publishMu.Unlock()
-	return true, nil
+	var once sync.Once
+	return func() {
+		once.Do(drainPublishNotifications)
+	}, nil
 }
 
-func DrainPublishNotifications() {
+func drainPublishNotifications() {
 	var firstPanic any
 	for {
 		publishMu.Lock()
