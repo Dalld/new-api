@@ -278,24 +278,41 @@ func main() {
 }
 
 func initializePublicStatusProbeConfiguration() error {
-	document, err := model.GetPublicStatusProbeConfig()
+	invalidEnvironment, err := initializePublicStatusProbeConfigurationWith(
+		common.IsMasterNode,
+		model.GetPublicStatusProbeConfig,
+		publicstatusprobesetting.LoadEnvironmentDocument,
+		model.EnsurePublicStatusProbeConfig,
+	)
+	if invalidEnvironment {
+		common.SysLog("public status probe bootstrap disabled: invalid configuration")
+	}
+	return err
+}
+
+func initializePublicStatusProbeConfigurationWith(
+	isMaster bool,
+	get func() (publicstatusprobesetting.Document, error),
+	loadEnvironment func() (publicstatusprobesetting.Document, error),
+	ensure func(publicstatusprobesetting.Document) (publicstatusprobesetting.Document, bool, error),
+) (invalidEnvironment bool, err error) {
+	_, err = get()
 	if err == nil {
-		return publicstatusprobesetting.PublishDocument(document)
+		return false, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
+		return false, err
+	}
+	if !isMaster {
+		return false, nil
 	}
 
-	bootstrap, err := publicstatusprobesetting.LoadEnvironmentDocument()
+	bootstrap, err := loadEnvironment()
 	if err != nil {
-		common.SysLog("public status probe bootstrap disabled: invalid configuration")
-		return publicstatusprobesetting.PublishDocument(publicstatusprobesetting.DefaultDocument())
+		return true, nil
 	}
-	document, _, err = model.EnsurePublicStatusProbeConfig(bootstrap)
-	if err != nil {
-		return err
-	}
-	return publicstatusprobesetting.PublishDocument(document)
+	_, _, err = ensure(bootstrap)
+	return false, err
 }
 
 func InjectUmamiAnalytics() {

@@ -32,6 +32,7 @@ func AllOption() ([]*Option, error) {
 }
 
 func InitOptionMap() {
+	publicStatusProbeConfigLoaded.Store(false)
 	common.OptionMapRWMutex.Lock()
 	common.OptionMap = make(map[string]string)
 
@@ -188,11 +189,6 @@ func InitOptionMap() {
 	}
 
 	common.OptionMapRWMutex.Unlock()
-	if document, err := GetPublicStatusProbeConfig(); err == nil {
-		if err := publicstatusprobesetting.PublishDocument(document); err != nil {
-			common.SysError("failed to initialize public status probe option")
-		}
-	}
 	if err := loadOptionsFromDatabase(); err != nil {
 		common.SysError("failed to load options from database: " + err.Error())
 	}
@@ -248,6 +244,9 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
+	if key == publicstatusprobesetting.OptionKey {
+		return ErrPublicStatusProbeConfigRequiresCAS
+	}
 	if err := validateOptionValue(key, value); err != nil {
 		return err
 	}
@@ -278,6 +277,9 @@ func UpdateOption(key string, value string) error {
 func UpdateOptionsBulk(values map[string]string) error {
 	if len(values) == 0 {
 		return nil
+	}
+	if _, exists := values[publicstatusprobesetting.OptionKey]; exists {
+		return ErrPublicStatusProbeConfigRequiresCAS
 	}
 	for key, value := range values {
 		if err := validateOptionValue(key, value); err != nil {

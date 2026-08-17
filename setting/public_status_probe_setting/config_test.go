@@ -428,6 +428,57 @@ func TestPublishDocumentUsesImmutableSnapshotsAndCallsHook(t *testing.T) {
 	}
 }
 
+func TestStageDocumentDefersHookUntilDrain(t *testing.T) {
+	preserveRuntimeState(t)
+	called := make(chan int64, 1)
+	SetPublishHook(func(version int64) { called <- version })
+
+	document := validDocument()
+	document.Version = 8
+	drain, err := StageDocument(document)
+	require.NoError(t, err)
+	assert.True(t, drain)
+	assert.Equal(t, document, CurrentDocument())
+	select {
+	case <-called:
+		t.Fatal("hook ran before staged notifications were drained")
+	default:
+	}
+
+	DrainPublishNotifications()
+	assert.Equal(t, document.Version, receiveVersion(t, called))
+}
+
+func TestStageDocumentQueuesEveryNotificationForOneDrain(t *testing.T) {
+	preserveRuntimeState(t)
+	versions := make(chan int64, 2)
+	SetPublishHook(func(version int64) { versions <- version })
+
+	first := validDocument()
+	first.Version = 9
+	drain, err := StageDocument(first)
+	require.NoError(t, err)
+	assert.True(t, drain)
+	second := validDocument()
+	second.Version = 10
+	drain, err = StageDocument(second)
+	require.NoError(t, err)
+	assert.False(t, drain)
+
+	DrainPublishNotifications()
+	assert.Equal(t, first.Version, receiveVersion(t, versions))
+	assert.Equal(t, second.Version, receiveVersion(t, versions))
+}
+
+func TestSetPublishHookReturnsPreviousHook(t *testing.T) {
+	preserveRuntimeState(t)
+	first := func(int64) {}
+	second := func(int64) {}
+	assert.Nil(t, SetPublishHook(first))
+	assert.NotNil(t, SetPublishHook(second))
+	assert.NotNil(t, SetPublishHook(nil))
+}
+
 func TestPublishDocumentSerializesConcurrentHookNotifications(t *testing.T) {
 	preserveRuntimeState(t)
 	firstEntered := make(chan struct{})

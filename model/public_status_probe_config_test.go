@@ -1,8 +1,10 @@
 package model
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +19,7 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func usePublicStatusProbeConfigDB(t *testing.T) *gorm.DB {
@@ -44,6 +47,7 @@ func preservePublicStatusProbeRuntime(t *testing.T) {
 	t.Helper()
 
 	previous := publicstatusprobesetting.CurrentDocument()
+	previousLoaded := publicStatusProbeConfigLoaded.Load()
 	common.OptionMapRWMutex.Lock()
 	previousMap := common.OptionMap
 	testMap := make(map[string]string, len(previousMap))
@@ -52,15 +56,54 @@ func preservePublicStatusProbeRuntime(t *testing.T) {
 	}
 	common.OptionMap = testMap
 	common.OptionMapRWMutex.Unlock()
-	publicstatusprobesetting.SetPublishHook(nil)
+	previousHook := publicstatusprobesetting.SetPublishHook(nil)
 	t.Cleanup(func() {
 		publicstatusprobesetting.SetPublishHook(nil)
 		require.NoError(t, publicstatusprobesetting.PublishDocument(previous))
-		publicstatusprobesetting.SetPublishHook(nil)
+		publicstatusprobesetting.SetPublishHook(previousHook)
 		common.OptionMapRWMutex.Lock()
 		common.OptionMap = previousMap
 		common.OptionMapRWMutex.Unlock()
+		publicStatusProbeConfigLoaded.Store(previousLoaded)
 	})
+}
+
+func useInitialPublicStatusProbeRuntime(t *testing.T) {
+	t.Helper()
+	preservePublicStatusProbeRuntime(t)
+	publicstatusprobesetting.SetPublishHook(nil)
+	publicStatusProbeConfigLoaded.Store(false)
+	require.NoError(t, publicstatusprobesetting.PublishDocument(publicstatusprobesetting.DefaultDocument()))
+	common.OptionMapRWMutex.Lock()
+	delete(common.OptionMap, publicstatusprobesetting.OptionKey)
+	common.OptionMapRWMutex.Unlock()
+}
+
+func TestGenericOptionWritersRejectPublicStatusProbeConfigBeforeDBWrite(t *testing.T) {
+	db := usePublicStatusProbeConfigDB(t)
+	useInitialPublicStatusProbeRuntime(t)
+	saved, _, err := EnsurePublicStatusProbeConfig(publicStatusProbeDocument(5))
+	require.NoError(t, err)
+	rawBefore := requirePublicStatusProbeOptionRaw(t, db)
+	runtimeBefore := publicstatusprobesetting.CurrentDocument()
+	require.NoError(t, db.Create(&Option{Key: "test.bulk-guard", Value: "before"}).Error)
+
+	next := saved
+	next.Version++
+	next.Enabled = false
+	nextRaw, err := publicstatusprobesetting.EncodeDocument(next)
+	require.NoError(t, err)
+
+	require.ErrorIs(t, UpdateOption(publicstatusprobesetting.OptionKey, nextRaw), ErrPublicStatusProbeConfigRequiresCAS)
+	require.ErrorIs(t, UpdateOptionsBulk(map[string]string{
+		publicstatusprobesetting.OptionKey: nextRaw,
+		"test.bulk-guard":                  "after",
+	}), ErrPublicStatusProbeConfigRequiresCAS)
+	assert.Equal(t, rawBefore, requirePublicStatusProbeOptionRaw(t, db))
+	assert.Equal(t, runtimeBefore, publicstatusprobesetting.CurrentDocument())
+	var guarded Option
+	require.NoError(t, db.Where("key = ?", "test.bulk-guard").Take(&guarded).Error)
+	assert.Equal(t, "before", guarded.Value)
 }
 
 func publicStatusProbeDocument(marker int) publicstatusprobesetting.Document {
@@ -103,6 +146,7 @@ func requirePublishedVersion(t *testing.T, versions <-chan int64) int64 {
 
 func TestEnsurePublicStatusProbeConfigImportsOnlyWhenAbsent(t *testing.T) {
 	db := usePublicStatusProbeConfigDB(t)
+	useInitialPublicStatusProbeRuntime(t)
 	bootstrap := publicStatusProbeDocument(1)
 
 	saved, created, err := EnsurePublicStatusProbeConfig(bootstrap)
@@ -115,6 +159,9 @@ func TestEnsurePublicStatusProbeConfigImportsOnlyWhenAbsent(t *testing.T) {
 	persisted, err := publicstatusprobesetting.DecodeDocument(option.Value)
 	require.NoError(t, err)
 	assert.Equal(t, bootstrap, persisted)
+	common.OptionMapRWMutex.RLock()
+	assert.Equal(t, option.Value, common.OptionMap[publicstatusprobesetting.OptionKey])
+	common.OptionMapRWMutex.RUnlock()
 
 	replacement := publicStatusProbeDocument(2)
 	loaded, created, err := EnsurePublicStatusProbeConfig(replacement)
@@ -126,6 +173,7 @@ func TestEnsurePublicStatusProbeConfigImportsOnlyWhenAbsent(t *testing.T) {
 
 func TestEnsurePublicStatusProbeConfigKeepsExistingDisabledEmptyDocument(t *testing.T) {
 	db := usePublicStatusProbeConfigDB(t)
+	useInitialPublicStatusProbeRuntime(t)
 	existing := publicstatusprobesetting.DefaultDocument()
 	existing.Enabled = false
 	existing.Targets = []publicstatusprobesetting.Target{}
@@ -150,6 +198,7 @@ func TestEnsurePublicStatusProbeConfigKeepsExistingDisabledEmptyDocument(t *test
 
 func TestEnsurePublicStatusProbeConfigConcurrentCreateHasOneWinner(t *testing.T) {
 	db := usePublicStatusProbeConfigDB(t)
+	useInitialPublicStatusProbeRuntime(t)
 	const workers = 8
 	require.NoError(t, db.Callback().Create().After("gorm:create").Register("test:distort-create-rows", func(tx *gorm.DB) {
 		tx.RowsAffected = 1
@@ -197,7 +246,7 @@ func TestEnsurePublicStatusProbeConfigConcurrentCreateHasOneWinner(t *testing.T)
 
 func TestCompareAndSwapPublicStatusProbeConfigRejectsStaleVersionWithoutPublish(t *testing.T) {
 	usePublicStatusProbeConfigDB(t)
-	preservePublicStatusProbeRuntime(t)
+	useInitialPublicStatusProbeRuntime(t)
 	saved, _, err := EnsurePublicStatusProbeConfig(publicStatusProbeDocument(20))
 	require.NoError(t, err)
 	require.NoError(t, publicstatusprobesetting.PublishDocument(saved))
@@ -215,7 +264,7 @@ func TestCompareAndSwapPublicStatusProbeConfigRejectsStaleVersionWithoutPublish(
 
 func TestCompareAndSwapPublicStatusProbeConfigIncrementsOnceAndPublishes(t *testing.T) {
 	db := usePublicStatusProbeConfigDB(t)
-	preservePublicStatusProbeRuntime(t)
+	useInitialPublicStatusProbeRuntime(t)
 	saved, _, err := EnsurePublicStatusProbeConfig(publicStatusProbeDocument(21))
 	require.NoError(t, err)
 	require.NoError(t, publicstatusprobesetting.PublishDocument(saved))
@@ -240,7 +289,7 @@ func TestCompareAndSwapPublicStatusProbeConfigIncrementsOnceAndPublishes(t *test
 
 func TestCompareAndSwapPublicStatusProbeConfigRowsAffectedConflictDoesNotPublish(t *testing.T) {
 	db := usePublicStatusProbeConfigDB(t)
-	preservePublicStatusProbeRuntime(t)
+	useInitialPublicStatusProbeRuntime(t)
 	saved, _, err := EnsurePublicStatusProbeConfig(publicStatusProbeDocument(22))
 	require.NoError(t, err)
 	require.NoError(t, publicstatusprobesetting.PublishDocument(saved))
@@ -267,7 +316,7 @@ func TestCompareAndSwapPublicStatusProbeConfigRowsAffectedConflictDoesNotPublish
 
 func TestCompareAndSwapPublicStatusProbeConfigWriteFailureDoesNotPublish(t *testing.T) {
 	db := usePublicStatusProbeConfigDB(t)
-	preservePublicStatusProbeRuntime(t)
+	useInitialPublicStatusProbeRuntime(t)
 	saved, _, err := EnsurePublicStatusProbeConfig(publicStatusProbeDocument(24))
 	require.NoError(t, err)
 	require.NoError(t, publicstatusprobesetting.PublishDocument(saved))
@@ -290,7 +339,7 @@ func TestCompareAndSwapPublicStatusProbeConfigWriteFailureDoesNotPublish(t *test
 
 func TestCompareAndSwapPublicStatusProbeConfigMutationFailureDoesNotWriteOrPublish(t *testing.T) {
 	db := usePublicStatusProbeConfigDB(t)
-	preservePublicStatusProbeRuntime(t)
+	useInitialPublicStatusProbeRuntime(t)
 	saved, _, err := EnsurePublicStatusProbeConfig(publicStatusProbeDocument(25))
 	require.NoError(t, err)
 	require.NoError(t, publicstatusprobesetting.PublishDocument(saved))
@@ -374,12 +423,30 @@ func TestApplyPublicStatusProbeConfigOptionIsMonotonicAndIdempotent(t *testing.T
 	conflicting.Version = current.Version
 	conflictingRaw, err := publicstatusprobesetting.EncodeDocument(conflicting)
 	require.NoError(t, err)
+	publicStatusProbeConfigLoaded.Store(true)
 	common.OptionMapRWMutex.Lock()
 	delete(common.OptionMap, publicstatusprobesetting.OptionKey)
 	common.OptionMapRWMutex.Unlock()
 	require.ErrorIs(t, ApplyPublicStatusProbeConfigOption(conflictingRaw), ErrPublicStatusProbeConfigConflict)
 	assert.Equal(t, current, publicstatusprobesetting.CurrentDocument())
 	requireNoPublishedVersion(t, versions)
+}
+
+func TestApplyPublicStatusProbeConfigOptionAcceptsInitialVersionOnce(t *testing.T) {
+	useInitialPublicStatusProbeRuntime(t)
+	initial := publicStatusProbeDocument(33)
+	initial.Version = publicstatusprobesetting.DefaultDocument().Version
+	initialRaw, err := publicstatusprobesetting.EncodeDocument(initial)
+	require.NoError(t, err)
+	require.NoError(t, ApplyPublicStatusProbeConfigOption(initialRaw))
+	assert.Equal(t, initial, publicstatusprobesetting.CurrentDocument())
+
+	conflicting := publicStatusProbeDocument(34)
+	conflicting.Version = initial.Version
+	conflictingRaw, err := publicstatusprobesetting.EncodeDocument(conflicting)
+	require.NoError(t, err)
+	require.ErrorIs(t, ApplyPublicStatusProbeConfigOption(conflictingRaw), ErrPublicStatusProbeConfigConflict)
+	assert.Equal(t, initial, publicstatusprobesetting.CurrentDocument())
 }
 
 func TestUpdateOptionMapPublishesPublicStatusProbeConfigWithoutHoldingOptionMapLock(t *testing.T) {
@@ -416,6 +483,120 @@ func TestUpdateOptionMapPublishesPublicStatusProbeConfigWithoutHoldingOptionMapL
 	case <-time.After(time.Second):
 		t.Fatal("publish hook was not called")
 	}
+}
+
+func TestPublicStatusProbeHookCanReenterApplyWithoutDeadlockOrLostNotification(t *testing.T) {
+	preservePublicStatusProbeRuntime(t)
+	current := publicStatusProbeDocument(36)
+	current.Version = 1
+	currentRaw, err := publicstatusprobesetting.EncodeDocument(current)
+	require.NoError(t, err)
+	setPublicStatusProbeOptionMap(currentRaw)
+	require.NoError(t, publicstatusprobesetting.PublishDocument(current))
+
+	second := publicStatusProbeDocument(37)
+	second.Version = 2
+	secondRaw, err := publicstatusprobesetting.EncodeDocument(second)
+	require.NoError(t, err)
+	third := publicStatusProbeDocument(38)
+	third.Version = 3
+	thirdRaw, err := publicstatusprobesetting.EncodeDocument(third)
+	require.NoError(t, err)
+
+	versions := make(chan int64, 2)
+	reentrant := make(chan error, 1)
+	publicstatusprobesetting.SetPublishHook(func(version int64) {
+		versions <- version
+		if version == second.Version {
+			reentrant <- ApplyPublicStatusProbeConfigOption(thirdRaw)
+		}
+	})
+	done := make(chan error, 1)
+	go func() { done <- ApplyPublicStatusProbeConfigOption(secondRaw) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Apply deadlocked when its hook reentered Apply")
+	}
+	require.NoError(t, <-reentrant)
+	assert.Equal(t, int64(2), requirePublishedVersion(t, versions))
+	assert.Equal(t, int64(3), requirePublishedVersion(t, versions))
+	assert.Equal(t, third, publicstatusprobesetting.CurrentDocument())
+	common.OptionMapRWMutex.RLock()
+	assert.Equal(t, thirdRaw, common.OptionMap[publicstatusprobesetting.OptionKey])
+	common.OptionMapRWMutex.RUnlock()
+}
+
+func TestPublicStatusProbeHookCanReenterCASWithoutDeadlockOrVersionRegression(t *testing.T) {
+	db := usePublicStatusProbeConfigDB(t)
+	useInitialPublicStatusProbeRuntime(t)
+	saved, _, err := EnsurePublicStatusProbeConfig(publicStatusProbeDocument(39))
+	require.NoError(t, err)
+	require.NoError(t, publicstatusprobesetting.PublishDocument(saved))
+
+	versions := make(chan int64, 2)
+	reentrant := make(chan error, 1)
+	publicstatusprobesetting.SetPublishHook(func(version int64) {
+		versions <- version
+		if version == saved.Version+1 {
+			_, err := CompareAndSwapPublicStatusProbeConfig(version, func(next *publicstatusprobesetting.Document) error {
+				next.RetentionDays++
+				return nil
+			})
+			reentrant <- err
+		}
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := CompareAndSwapPublicStatusProbeConfig(saved.Version, func(next *publicstatusprobesetting.Document) error {
+			next.Enabled = false
+			return nil
+		})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("CAS deadlocked when its hook reentered CAS")
+	}
+	require.NoError(t, <-reentrant)
+	assert.Equal(t, saved.Version+1, requirePublishedVersion(t, versions))
+	assert.Equal(t, saved.Version+2, requirePublishedVersion(t, versions))
+	assert.Equal(t, saved.Version+2, publicstatusprobesetting.CurrentDocument().Version)
+	persisted, err := publicstatusprobesetting.DecodeDocument(requirePublicStatusProbeOptionRaw(t, db))
+	require.NoError(t, err)
+	assert.Equal(t, saved.Version+2, persisted.Version)
+	optionRaw, err := publicstatusprobesetting.EncodeDocument(persisted)
+	require.NoError(t, err)
+	common.OptionMapRWMutex.RLock()
+	assert.Equal(t, optionRaw, common.OptionMap[publicstatusprobesetting.OptionKey])
+	common.OptionMapRWMutex.RUnlock()
+}
+
+func TestPublicStatusProbeDBOperationsNeverLogRawJSON(t *testing.T) {
+	db := usePublicStatusProbeConfigDB(t)
+	useInitialPublicStatusProbeRuntime(t)
+	var output bytes.Buffer
+	noisy := logger.New(log.New(&output, "", 0), logger.Config{
+		LogLevel:             logger.Info,
+		ParameterizedQueries: false,
+	})
+	DB = db.Session(&gorm.Session{Logger: noisy})
+
+	document := publicStatusProbeDocument(41)
+	document.Targets[0].DisplayName = "raw-json-marker"
+	saved, _, err := EnsurePublicStatusProbeConfig(document)
+	require.NoError(t, err)
+	_, err = GetPublicStatusProbeConfig()
+	require.NoError(t, err)
+	_, err = CompareAndSwapPublicStatusProbeConfig(saved.Version, func(next *publicstatusprobesetting.Document) error {
+		next.Enabled = false
+		return nil
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, output.String(), "raw-json-marker")
 }
 
 func TestPublicStatusProbePersistenceSQLIsPortable(t *testing.T) {

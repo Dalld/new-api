@@ -5,20 +5,30 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/QuantumNous/new-api/common"
 	publicstatusprobesetting "github.com/QuantumNous/new-api/setting/public_status_probe_setting"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
 )
 
-var ErrPublicStatusProbeConfigConflict = errors.New("public status probe configuration conflict")
+var (
+	ErrPublicStatusProbeConfigConflict    = errors.New("public status probe configuration conflict")
+	ErrPublicStatusProbeConfigRequiresCAS = errors.New("public status probe configuration requires compare-and-swap")
+)
 
 var publicStatusProbePublishMu sync.Mutex
+var publicStatusProbeConfigLoaded atomic.Bool
 
 func EnsurePublicStatusProbeConfig(bootstrap publicstatusprobesetting.Document) (publicstatusprobesetting.Document, bool, error) {
-	existing, err := GetPublicStatusProbeConfig()
+	db := publicStatusProbeDB(DB)
+	existing, existingRaw, err := getPublicStatusProbeConfig(db)
 	if err == nil {
+		if _, err := publishPublicStatusProbeConfig(existingRaw); err != nil {
+			return publicstatusprobesetting.Document{}, false, err
+		}
 		return existing, false, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -33,7 +43,7 @@ func EnsurePublicStatusProbeConfig(bootstrap publicstatusprobesetting.Document) 
 	if err != nil {
 		return publicstatusprobesetting.Document{}, false, err
 	}
-	result := createPublicStatusProbeConfig(DB, &Option{
+	result := createPublicStatusProbeConfig(db, &Option{
 		Key:   publicstatusprobesetting.OptionKey,
 		Value: candidate,
 	})
@@ -42,7 +52,7 @@ func EnsurePublicStatusProbeConfig(bootstrap publicstatusprobesetting.Document) 
 	}
 
 	var authoritative Option
-	if err := DB.Where(clause.Eq{
+	if err := db.Where(clause.Eq{
 		Column: clause.Column{Name: "key"},
 		Value:  publicstatusprobesetting.OptionKey,
 	}).Take(&authoritative).Error; err != nil {
@@ -50,13 +60,13 @@ func EnsurePublicStatusProbeConfig(bootstrap publicstatusprobesetting.Document) 
 	}
 	created := authoritative.Value == candidate
 	if created {
-		normalized := updatePublicStatusProbeConfig(DB, candidate, raw)
+		normalized := updatePublicStatusProbeConfig(db, candidate, raw)
 		if normalized.Error != nil {
 			return publicstatusprobesetting.Document{}, false, normalized.Error
 		}
 		if normalized.RowsAffected == 1 {
 			authoritative.Value = raw
-		} else if err := DB.Where(clause.Eq{
+		} else if err := db.Where(clause.Eq{
 			Column: clause.Column{Name: "key"},
 			Value:  publicstatusprobesetting.OptionKey,
 		}).Take(&authoritative).Error; err != nil {
@@ -69,26 +79,36 @@ func EnsurePublicStatusProbeConfig(bootstrap publicstatusprobesetting.Document) 
 	if err != nil {
 		return publicstatusprobesetting.Document{}, false, err
 	}
+	if _, err := publishPublicStatusProbeConfig(authoritative.Value); err != nil {
+		return publicstatusprobesetting.Document{}, false, err
+	}
 	return existing, created, nil
 }
 
 func GetPublicStatusProbeConfig() (publicstatusprobesetting.Document, error) {
+	document, _, err := getPublicStatusProbeConfig(publicStatusProbeDB(DB))
+	return document, err
+}
+
+func getPublicStatusProbeConfig(db *gorm.DB) (publicstatusprobesetting.Document, string, error) {
 	var option Option
-	if err := DB.Where(clause.Eq{
+	if err := db.Where(clause.Eq{
 		Column: clause.Column{Name: "key"},
 		Value:  publicstatusprobesetting.OptionKey,
 	}).Take(&option).Error; err != nil {
-		return publicstatusprobesetting.Document{}, err
+		return publicstatusprobesetting.Document{}, "", err
 	}
-	return publicstatusprobesetting.DecodeDocument(option.Value)
+	document, err := publicstatusprobesetting.DecodeDocument(option.Value)
+	return document, option.Value, err
 }
 
 func CompareAndSwapPublicStatusProbeConfig(
 	expectedVersion int64,
 	mutate func(*publicstatusprobesetting.Document) error,
 ) (publicstatusprobesetting.Document, error) {
+	db := publicStatusProbeDB(DB)
 	var option Option
-	if err := DB.Where(clause.Eq{
+	if err := db.Where(clause.Eq{
 		Column: clause.Column{Name: "key"},
 		Value:  publicstatusprobesetting.OptionKey,
 	}).Take(&option).Error; err != nil {
@@ -124,7 +144,7 @@ func CompareAndSwapPublicStatusProbeConfig(
 		return publicstatusprobesetting.Document{}, err
 	}
 
-	result := updatePublicStatusProbeConfig(DB, option.Value, nextRaw)
+	result := updatePublicStatusProbeConfig(db, option.Value, nextRaw)
 	if result.Error != nil {
 		return publicstatusprobesetting.Document{}, result.Error
 	}
@@ -153,33 +173,46 @@ func publishPublicStatusProbeConfig(raw string) (bool, error) {
 	}
 
 	publicStatusProbePublishMu.Lock()
-	defer publicStatusProbePublishMu.Unlock()
 
 	current := publicstatusprobesetting.CurrentDocument()
 	currentRaw, err := publicstatusprobesetting.EncodeDocument(current)
 	if err != nil {
+		publicStatusProbePublishMu.Unlock()
 		return false, err
 	}
 	if document.Version < current.Version {
+		publicStatusProbePublishMu.Unlock()
 		return false, nil
 	}
 	if document.Version == current.Version {
 		if canonicalRaw == currentRaw {
 			setPublicStatusProbeOptionMap(raw)
+			publicStatusProbeConfigLoaded.Store(true)
+			publicStatusProbePublishMu.Unlock()
 			return true, nil
 		}
-		return false, ErrPublicStatusProbeConfigConflict
+		if publicStatusProbeConfigLoaded.Load() {
+			publicStatusProbePublishMu.Unlock()
+			return false, ErrPublicStatusProbeConfigConflict
+		}
 	}
 
-	setPublicStatusProbeOptionMap(raw)
-	if err := publicstatusprobesetting.PublishDocument(document); err != nil {
+	drain, err := publicstatusprobesetting.StageDocument(document)
+	if err != nil {
+		publicStatusProbePublishMu.Unlock()
 		return false, err
+	}
+	setPublicStatusProbeOptionMap(raw)
+	publicStatusProbeConfigLoaded.Store(true)
+	publicStatusProbePublishMu.Unlock()
+	if drain {
+		publicstatusprobesetting.DrainPublishNotifications()
 	}
 	return true, nil
 }
 
 func createPublicStatusProbeConfig(db *gorm.DB, option *Option) *gorm.DB {
-	return db.Clauses(clause.OnConflict{DoNothing: true}).Create(option)
+	return publicStatusProbeDB(db).Clauses(clause.OnConflict{DoNothing: true}).Create(option)
 }
 
 func updatePublicStatusProbeConfig(db *gorm.DB, oldRaw string, newRaw string) *gorm.DB {
@@ -200,7 +233,11 @@ func updatePublicStatusProbeConfig(db *gorm.DB, oldRaw string, newRaw string) *g
 			Value:  oldRaw,
 		})
 	}
-	return db.Model(&Option{}).Where(clause.And(conditions...)).Update("value", newRaw)
+	return publicStatusProbeDB(db).Model(&Option{}).Where(clause.And(conditions...)).Update("value", newRaw)
+}
+
+func publicStatusProbeDB(db *gorm.DB) *gorm.DB {
+	return db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)})
 }
 
 func setPublicStatusProbeOptionMap(raw string) {

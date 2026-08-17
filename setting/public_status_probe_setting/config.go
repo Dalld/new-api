@@ -191,9 +191,23 @@ func ValidateAndNormalizeDocument(document Document) (Document, error) {
 }
 
 func PublishDocument(document Document) error {
-	normalized, err := ValidateAndNormalizeDocument(document)
+	drain, err := StageDocument(document)
 	if err != nil {
 		return err
+	}
+	if drain {
+		DrainPublishNotifications()
+	}
+	return nil
+}
+
+// StageDocument updates the runtime snapshot and queues its notification. The
+// caller that receives drain=true must call DrainPublishNotifications after
+// releasing any lock that an external publish hook may reenter.
+func StageDocument(document Document) (drain bool, err error) {
+	normalized, err := ValidateAndNormalizeDocument(document)
+	if err != nil {
+		return false, err
 	}
 
 	publishMu.Lock()
@@ -204,11 +218,14 @@ func PublishDocument(document Document) error {
 	publishQueue = append(publishQueue, publishNotification{version: normalized.Version, hook: hook})
 	if publishDispatching {
 		publishMu.Unlock()
-		return nil
+		return false, nil
 	}
 	publishDispatching = true
 	publishMu.Unlock()
+	return true, nil
+}
 
+func DrainPublishNotifications() {
 	var firstPanic any
 	for {
 		publishMu.Lock()
@@ -219,7 +236,7 @@ func PublishDocument(document Document) error {
 			if firstPanic != nil {
 				panic(firstPanic)
 			}
-			return nil
+			return
 		}
 		notification := publishQueue[0]
 		publishQueue[0] = publishNotification{}
@@ -290,10 +307,12 @@ func loadEnvironmentDocument(lookup func(string) (string, bool)) (Document, erro
 	return ValidateAndNormalizeDocument(document)
 }
 
-func SetPublishHook(hook func(int64)) {
+func SetPublishHook(hook func(int64)) func(int64) {
 	runtimeMu.Lock()
+	previous := publishHook
 	publishHook = hook
 	runtimeMu.Unlock()
+	return previous
 }
 
 func cloneDocument(document Document) Document {
