@@ -103,9 +103,7 @@ function readLocale(filename: string): Locale {
 describe('affiliate and channel status localization', () => {
   test('registers the public status probe operations section exactly once', () => {
     const source = readFileSync(operationsSectionRegistry, 'utf8')
-    const registrations = source.match(
-      /\bid:\s*['"]public-status-probe['"]/g
-    )
+    const registrations = source.match(/\bid:\s*['"]public-status-probe['"]/g)
 
     assert.equal(registrations?.length, 1)
     assert.match(
