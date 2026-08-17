@@ -465,32 +465,64 @@ func TestPublishDocumentSerializesConcurrentHookNotifications(t *testing.T) {
 	second.Version = 11
 	secondDone := make(chan error, 1)
 	go func() { secondDone <- PublishDocument(second) }()
-	outOfOrder := false
+	select {
+	case err := <-secondDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second publish to enqueue")
+	}
 	select {
 	case <-secondEntered:
-		outOfOrder = true
-	case <-time.After(100 * time.Millisecond):
+		t.Fatal("second hook ran before first hook completed")
+	default:
 	}
 	release()
 
+	select {
+	case <-secondEntered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second hook")
+	}
 	select {
 	case err := <-firstDone:
 		require.NoError(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for first publish")
 	}
+}
+
+func TestPublishDocumentAllowsHookToPublish(t *testing.T) {
+	preserveRuntimeState(t)
+	versions := make(chan int64, 2)
+	reentrantDone := make(chan error, 1)
+	SetPublishHook(func(version int64) {
+		versions <- version
+		if version == 20 {
+			reentrant := validDocument()
+			reentrant.Version = 21
+			reentrantDone <- PublishDocument(reentrant)
+		}
+	})
+
+	document := validDocument()
+	document.Version = 20
+	publishDone := make(chan error, 1)
+	go func() { publishDone <- PublishDocument(document) }()
+	assert.Equal(t, int64(20), receiveVersion(t, versions))
 	select {
-	case err := <-secondDone:
+	case err := <-reentrantDone:
 		require.NoError(t, err)
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for second publish")
+		t.Fatal("timed out waiting for reentrant publish")
 	}
+	assert.Equal(t, int64(21), receiveVersion(t, versions))
 	select {
-	case <-secondEntered:
+	case err := <-publishDone:
+		require.NoError(t, err)
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for second hook")
+		t.Fatal("timed out waiting for notification dispatcher")
 	}
-	assert.False(t, outOfOrder, "second hook ran before first hook completed")
+	assert.Equal(t, int64(21), CurrentDocument().Version)
 }
 
 func TestCurrentSettingFiltersDisabledTargets(t *testing.T) {

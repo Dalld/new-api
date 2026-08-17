@@ -31,11 +31,18 @@ type Document struct {
 	Targets            []Target `json:"targets"`
 }
 
+type publishNotification struct {
+	version int64
+	hook    func(int64)
+}
+
 var (
-	runtimeMu       sync.RWMutex
-	publishMu       sync.Mutex
-	runtimeDocument = DefaultDocument()
-	publishHook     func(int64)
+	runtimeMu          sync.RWMutex
+	publishMu          sync.Mutex
+	runtimeDocument    = DefaultDocument()
+	publishHook        func(int64)
+	publishQueue       []publishNotification
+	publishDispatching bool
 )
 
 func DefaultDocument() Document {
@@ -187,15 +194,43 @@ func PublishDocument(document Document) error {
 	}
 
 	publishMu.Lock()
-	defer publishMu.Unlock()
 	runtimeMu.Lock()
 	runtimeDocument = cloneDocument(normalized)
 	hook := publishHook
 	runtimeMu.Unlock()
-	if hook != nil {
-		hook(normalized.Version)
+	publishQueue = append(publishQueue, publishNotification{version: normalized.Version, hook: hook})
+	if publishDispatching {
+		publishMu.Unlock()
+		return nil
 	}
-	return nil
+	publishDispatching = true
+	publishMu.Unlock()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			publishMu.Lock()
+			publishDispatching = false
+			publishMu.Unlock()
+			panic(recovered)
+		}
+	}()
+
+	for {
+		publishMu.Lock()
+		if len(publishQueue) == 0 {
+			publishQueue = nil
+			publishDispatching = false
+			publishMu.Unlock()
+			return nil
+		}
+		notification := publishQueue[0]
+		publishQueue[0] = publishNotification{}
+		publishQueue = publishQueue[1:]
+		publishMu.Unlock()
+
+		if notification.hook != nil {
+			notification.hook(notification.version)
+		}
+	}
 }
 
 func CurrentDocument() Document {
