@@ -193,6 +193,20 @@ describe('public status probe target validation', () => {
     )
   })
 
+  test('uses the same edge whitespace set as Go strings.TrimSpace', () => {
+    const byteOrderMark = '\ufeff'
+    const parsed = targetFormSchema.parse({
+      ...validTarget,
+      group: `${byteOrderMark}Primary${byteOrderMark}`,
+    })
+    assert.equal(parsed.group, `${byteOrderMark}Primary${byteOrderMark}`)
+
+    const config = validConfig(1)
+    assert.ok(config.targets[0])
+    config.targets[0].key = `${byteOrderMark}probe-0${byteOrderMark}`
+    assert.equal(publicStatusProbeConfigSchema.safeParse(config).success, true)
+  })
+
   test('requires a positive integer channel and non-negative integer key index', () => {
     for (const channel_id of [0, -1, 1.5]) {
       assert.equal(
@@ -249,7 +263,9 @@ describe('public status probe target validation', () => {
 
   test('rejects private or malformed fields in safe channel options', () => {
     const privateChannel = validConfig(0) as PublicStatusProbeConfig & {
-      channels: Array<PublicStatusProbeConfig['channels'][number] & { key?: string }>
+      channels: Array<
+        PublicStatusProbeConfig['channels'][number] & { key?: string }
+      >
     }
     assert.ok(privateChannel.channels[0])
     privateChannel.channels[0].key = 'secret'

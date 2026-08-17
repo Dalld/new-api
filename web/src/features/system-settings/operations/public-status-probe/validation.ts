@@ -32,19 +32,49 @@ import {
 
 const positiveVersionSchema = z.number().int().positive()
 
+function isGoSpace(value: string) {
+  const codePoint = value.codePointAt(0)
+  return (
+    (codePoint !== undefined && codePoint >= 0x09 && codePoint <= 0x0d) ||
+    codePoint === 0x20 ||
+    codePoint === 0x85 ||
+    codePoint === 0xa0 ||
+    codePoint === 0x1680 ||
+    (codePoint !== undefined && codePoint >= 0x2000 && codePoint <= 0x200a) ||
+    codePoint === 0x2028 ||
+    codePoint === 0x2029 ||
+    codePoint === 0x202f ||
+    codePoint === 0x205f ||
+    codePoint === 0x3000
+  )
+}
+
+function trimGoSpace(value: string) {
+  const codePoints = [...value]
+  let start = 0
+  let end = codePoints.length
+  while (start < end && isGoSpace(codePoints[start] ?? '')) start += 1
+  while (end > start && isGoSpace(codePoints[end - 1] ?? '')) end -= 1
+  return codePoints.slice(start, end).join('')
+}
+
 function requiredTrimmedString(maxCodePoints: number) {
   return z
     .string()
-    .trim()
-    .min(1)
-    .refine((value) => [...value].length <= maxCodePoints)
+    .transform(trimGoSpace)
+    .pipe(
+      z
+        .string()
+        .min(1)
+        .refine((value) => [...value].length <= maxCodePoints)
+    )
 }
 
 function canonicalString(maxCodePoints: number) {
   return z
     .string()
     .min(1)
-    .refine((value) => value === value.trim())
+    .refine((value) => value === trimGoSpace(value))
     .refine((value) => [...value].length <= maxCodePoints)
 }
 
