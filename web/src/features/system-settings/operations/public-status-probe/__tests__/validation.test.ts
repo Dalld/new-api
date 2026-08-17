@@ -63,6 +63,17 @@ function validConfig(targetCount: number): PublicStatusProbeConfig {
         key_count: 1,
       },
     })),
+    channels: [
+      {
+        id: 42,
+        name: 'Channel',
+        type: 1,
+        status: 1,
+        models: 'gpt-5.5',
+        is_multi_key: false,
+        key_count: 1,
+      },
+    ],
   }
 }
 
@@ -232,6 +243,18 @@ describe('public status probe target validation', () => {
     paddedKey.targets[0].key = ' probe-0 '
     assert.equal(
       publicStatusProbeConfigSchema.safeParse(paddedKey).success,
+      false
+    )
+  })
+
+  test('rejects private or malformed fields in safe channel options', () => {
+    const privateChannel = validConfig(0) as PublicStatusProbeConfig & {
+      channels: Array<PublicStatusProbeConfig['channels'][number] & { key?: string }>
+    }
+    assert.ok(privateChannel.channels[0])
+    privateChannel.channels[0].key = 'secret'
+    assert.equal(
+      publicStatusProbeConfigSchema.safeParse(privateChannel).success,
       false
     )
   })

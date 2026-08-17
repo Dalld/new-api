@@ -220,6 +220,11 @@ func TestPublicStatusProbeAdminCRUDAndStrictValidation(t *testing.T) {
 	require.NoError(t, common.Unmarshal(getResponse.Body.Bytes(), &getPayload))
 	require.True(t, getPayload.Success)
 	assert.Equal(t, initial.Version, getPayload.Data.Version)
+	require.Len(t, getPayload.Data.Channels, 1)
+	assert.Equal(t, safeChannel.Id, getPayload.Data.Channels[0].ID)
+	assert.Equal(t, "Safe Channel", getPayload.Data.Channels[0].Name)
+	assert.Equal(t, "gpt-5.5,gpt-5.5-mini", getPayload.Data.Channels[0].Models)
+	assert.Equal(t, 2, getPayload.Data.Channels[0].KeyCount)
 	require.Len(t, getPayload.Data.Targets, 1)
 	require.Equal(t, safeChannel.Id, getPayload.Data.Targets[0].Channel.ID)
 	assert.Equal(t, "Safe Channel", getPayload.Data.Targets[0].Channel.Name)
@@ -368,6 +373,7 @@ func TestPublicStatusProbeAdminReturnsAndDeletesOrphanTarget(t *testing.T) {
 	var getPayload publicStatusProbeAdminResponse
 	require.NoError(t, common.Unmarshal(getResponse.Body.Bytes(), &getPayload))
 	require.Len(t, getPayload.Data.Targets, 1)
+	assert.Empty(t, getPayload.Data.Channels)
 	placeholder := getPayload.Data.Targets[0].Channel
 	assert.Equal(t, 909, placeholder.ID)
 	assert.Equal(t, common.ChannelStatusManuallyDisabled, placeholder.Status)

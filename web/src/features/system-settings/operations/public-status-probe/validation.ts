@@ -121,6 +121,7 @@ const publicStatusProbeTargetsSchema = z
 export const publicStatusProbeConfigSchema = globalSettingsSchema.extend({
   version: positiveVersionSchema,
   targets: publicStatusProbeTargetsSchema,
+  channels: z.array(publicStatusProbeChannelSchema),
 }) satisfies z.ZodType<PublicStatusProbeConfig>
 
 export const publicStatusProbeSuccessResponseSchema = z

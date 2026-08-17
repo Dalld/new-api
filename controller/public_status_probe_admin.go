@@ -72,14 +72,15 @@ type publicStatusProbeAdminTargetDTO struct {
 }
 
 type publicStatusProbeAdminConfigDTO struct {
-	Version            int64                             `json:"version"`
-	Enabled            bool                              `json:"enabled"`
-	PingTimeoutSeconds int                               `json:"ping_timeout_seconds"`
-	ChatTimeoutSeconds int                               `json:"chat_timeout_seconds"`
-	DegradedLatencyMS  int                               `json:"degraded_latency_ms"`
-	Concurrency        int                               `json:"concurrency"`
-	RetentionDays      int                               `json:"retention_days"`
-	Targets            []publicStatusProbeAdminTargetDTO `json:"targets"`
+	Version            int64                              `json:"version"`
+	Enabled            bool                               `json:"enabled"`
+	PingTimeoutSeconds int                                `json:"ping_timeout_seconds"`
+	ChatTimeoutSeconds int                                `json:"chat_timeout_seconds"`
+	DegradedLatencyMS  int                                `json:"degraded_latency_ms"`
+	Concurrency        int                                `json:"concurrency"`
+	RetentionDays      int                                `json:"retention_days"`
+	Targets            []publicStatusProbeAdminTargetDTO  `json:"targets"`
+	Channels           []publicStatusProbeAdminChannelDTO `json:"channels"`
 }
 
 type publicStatusProbeAdminResponse struct {
@@ -342,6 +343,21 @@ func validatePublicStatusProbeTarget(c *gin.Context, target publicstatusprobeset
 }
 
 func buildPublicStatusProbeAdminResponse(document publicstatusprobesetting.Document) (publicStatusProbeAdminResponse, error) {
+	var channels []model.Channel
+	if err := model.DB.
+		Select("id", "name", "type", "status", "models", "key", "channel_info").
+		Order("id ASC").
+		Find(&channels).Error; err != nil {
+		return publicStatusProbeAdminResponse{}, err
+	}
+	channelByID := make(map[int]publicStatusProbeAdminChannelDTO, len(channels))
+	channelDTOs := make([]publicStatusProbeAdminChannelDTO, 0, len(channels))
+	for _, channel := range channels {
+		channelDTO := buildPublicStatusProbeAdminChannelDTO(channel)
+		channelDTOs = append(channelDTOs, channelDTO)
+		channelByID[channel.Id] = channelDTO
+	}
+
 	response := publicStatusProbeAdminResponse{
 		Success: true,
 		Data: publicStatusProbeAdminConfigDTO{
@@ -353,13 +369,17 @@ func buildPublicStatusProbeAdminResponse(document publicstatusprobesetting.Docum
 			Concurrency:        document.Concurrency,
 			RetentionDays:      document.RetentionDays,
 			Targets:            make([]publicStatusProbeAdminTargetDTO, 0, len(document.Targets)),
+			Channels:           channelDTOs,
 		},
 	}
 
 	for _, target := range document.Targets {
-		channelDTO, err := buildPublicStatusProbeAdminChannelDTO(target.ChannelID)
-		if err != nil {
-			return publicStatusProbeAdminResponse{}, err
+		channelDTO, exists := channelByID[target.ChannelID]
+		if !exists {
+			channelDTO = publicStatusProbeAdminChannelDTO{
+				ID:     target.ChannelID,
+				Status: common.ChannelStatusManuallyDisabled,
+			}
 		}
 		response.Data.Targets = append(response.Data.Targets, publicStatusProbeAdminTargetDTO{
 			Enabled:     target.Enabled,
@@ -377,17 +397,7 @@ func buildPublicStatusProbeAdminResponse(document publicstatusprobesetting.Docum
 	return response, nil
 }
 
-func buildPublicStatusProbeAdminChannelDTO(channelID int) (publicStatusProbeAdminChannelDTO, error) {
-	channel, err := model.GetChannelById(channelID, true)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return publicStatusProbeAdminChannelDTO{
-			ID:     channelID,
-			Status: common.ChannelStatusManuallyDisabled,
-		}, nil
-	}
-	if err != nil {
-		return publicStatusProbeAdminChannelDTO{}, err
-	}
+func buildPublicStatusProbeAdminChannelDTO(channel model.Channel) publicStatusProbeAdminChannelDTO {
 	keyCount := len(channel.GetKeys())
 	if channel.ChannelInfo.IsMultiKey && channel.ChannelInfo.MultiKeySize > 0 {
 		keyCount = channel.ChannelInfo.MultiKeySize
@@ -400,7 +410,7 @@ func buildPublicStatusProbeAdminChannelDTO(channelID int) (publicStatusProbeAdmi
 		Models:     channel.Models,
 		IsMultiKey: channel.ChannelInfo.IsMultiKey,
 		KeyCount:   keyCount,
-	}, nil
+	}
 }
 
 func writePublicStatusProbeAdminMutationError(c *gin.Context, err error) {

@@ -41,6 +41,7 @@ const config = {
   concurrency: 5,
   retention_days: 7,
   targets: [],
+  channels: [],
 }
 
 async function record(method: ApiCall['method'], args: unknown[]) {

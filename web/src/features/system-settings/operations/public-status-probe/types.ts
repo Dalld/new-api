@@ -63,6 +63,7 @@ export interface GlobalSettingsInput {
 export interface PublicStatusProbeConfig extends GlobalSettingsInput {
   version: number
   targets: PublicStatusProbeTarget[]
+  channels: PublicStatusProbeChannel[]
 }
 
 export type PublicStatusProbeErrorKind = 'validation' | 'conflict' | 'request'
