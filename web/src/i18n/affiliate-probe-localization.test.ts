@@ -22,6 +22,8 @@ import { dirname, join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import { STATIC_I18N_KEYS } from './static-keys'
+
 type Locale = { translation: Record<string, string> }
 
 const i18nDir = dirname(fileURLToPath(import.meta.url))
@@ -31,6 +33,13 @@ const sourceRoots = [
   join(srcDir, 'features', 'my-affiliate'),
   join(srcDir, 'features', 'group-probe-status'),
   join(srcDir, 'features', 'system-settings', 'operations', 'group-probe'),
+  join(
+    srcDir,
+    'features',
+    'system-settings',
+    'operations',
+    'public-status-probe'
+  ),
 ]
 const sourceFiles = [
   join(
@@ -43,6 +52,26 @@ const sourceFiles = [
   join(srcDir, 'hooks', 'use-top-nav-links.ts'),
   join(srcDir, 'routes', 'status.tsx'),
 ]
+
+const operationsSectionRegistry = join(
+  srcDir,
+  'features',
+  'system-settings',
+  'operations',
+  'section-registry.tsx'
+)
+
+const publicStatusProbeDynamicKeys = [
+  'Ping timeout (seconds)',
+  'Conversation timeout (seconds)',
+  'Degraded latency threshold (ms)',
+  'Probe concurrency',
+  'History retention (days)',
+  'OpenAI Chat Completions',
+  'OpenAI Responses',
+  'Anthropic Messages',
+  'Gemini Generate Content',
+] as const
 
 function collectSourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -63,6 +92,7 @@ function collectTranslationKeys() {
       keys.add(match[2])
     }
   }
+  for (const key of publicStatusProbeDynamicKeys) keys.add(key)
   return [...keys].sort()
 }
 
@@ -71,6 +101,29 @@ function readLocale(filename: string): Locale {
 }
 
 describe('affiliate and channel status localization', () => {
+  test('registers the public status probe operations section exactly once', () => {
+    const source = readFileSync(operationsSectionRegistry, 'utf8')
+    const registrations = source.match(
+      /\bid:\s*['"]public-status-probe['"]/g
+    )
+
+    assert.equal(registrations?.length, 1)
+    assert.match(
+      source,
+      /import\s*{\s*PublicStatusProbeSettingsSection\s*}\s*from\s*['"]\.\/public-status-probe['"]/
+    )
+    assert.match(
+      source,
+      /id:\s*['"]public-status-probe['"][\s\S]*?titleKey:\s*['"]Public Status Probe['"][\s\S]*?build:\s*\(\)\s*=>\s*<PublicStatusProbeSettingsSection\s*\/>/
+    )
+  })
+
+  test('declares every dynamic public status probe label for extraction', () => {
+    for (const key of publicStatusProbeDynamicKeys) {
+      assert.ok(STATIC_I18N_KEYS.includes(key), `missing static key: ${key}`)
+    }
+  })
+
   test('provides every UI key in all supported locales', () => {
     const en = readLocale('en.json').translation
     const locales = new Map(

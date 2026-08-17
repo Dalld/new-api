@@ -216,6 +216,18 @@ export const STATIC_I18N_KEYS = [
   // Channel Affinity section
   'Channel Affinity',
 
+  // Public status probe settings (dynamic section/field labels)
+  'Public Status Probe',
+  'Ping timeout (seconds)',
+  'Conversation timeout (seconds)',
+  'Degraded latency threshold (ms)',
+  'Probe concurrency',
+  'History retention (days)',
+  'OpenAI Chat Completions',
+  'OpenAI Responses',
+  'Anthropic Messages',
+  'Gemini Generate Content',
+
   // Models constants
   'Exact Match',
   'Prefix Match',

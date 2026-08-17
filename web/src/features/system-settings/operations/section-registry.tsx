@@ -25,6 +25,7 @@ import { PerformanceSection } from '../maintenance/performance-section'
 import { UpdateCheckerSection } from '../maintenance/update-checker-section'
 import type { OperationsSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+import { PublicStatusProbeSettingsSection } from './public-status-probe'
 
 const OPERATIONS_SECTIONS = [
   {
@@ -126,6 +127,11 @@ const OPERATIONS_SECTIONS = [
         }}
       />
     ),
+  },
+  {
+    id: 'public-status-probe',
+    titleKey: 'Public Status Probe',
+    build: () => <PublicStatusProbeSettingsSection />,
   },
   {
     id: 'update-checker',
