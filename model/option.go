@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/performance_setting"
+	publicstatusprobesetting "github.com/QuantumNous/new-api/setting/public_status_probe_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"gorm.io/gorm"
@@ -187,6 +188,11 @@ func InitOptionMap() {
 	}
 
 	common.OptionMapRWMutex.Unlock()
+	if document, err := GetPublicStatusProbeConfig(); err == nil {
+		if err := publicstatusprobesetting.PublishDocument(document); err != nil {
+			common.SysError("failed to initialize public status probe option")
+		}
+	}
 	if err := loadOptionsFromDatabase(); err != nil {
 		common.SysError("failed to load options from database: " + err.Error())
 	}
@@ -221,6 +227,10 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == publicstatusprobesetting.OptionKey {
+		_, err := publicstatusprobesetting.DecodeDocument(value)
+		return err
+	}
 	if key == operation_setting.ToolPriceOptionKey {
 		return operation_setting.ValidateToolPricesJSON(value)
 	}
@@ -304,6 +314,9 @@ func updateOptionMap(key string, value string) (err error) {
 		delete(common.OptionMap, key)
 		common.OptionMapRWMutex.Unlock()
 		return nil
+	}
+	if key == publicstatusprobesetting.OptionKey {
+		return ApplyPublicStatusProbeConfigOption(value)
 	}
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()

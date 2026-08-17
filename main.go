@@ -37,6 +37,7 @@ import (
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"gorm.io/gorm"
 
 	_ "net/http/pprof"
 )
@@ -57,6 +58,10 @@ func main() {
 	err := InitResources()
 	if err != nil {
 		common.FatalLog("failed to initialize resources: " + err.Error())
+		return
+	}
+	if err := initializePublicStatusProbeConfiguration(); err != nil {
+		common.FatalLog("failed to initialize public status probe configuration")
 		return
 	}
 
@@ -83,11 +88,8 @@ func main() {
 	}()
 
 	probeContext, cancelPublicStatusProbe := context.WithCancel(context.Background())
-	probeSetting, probeSettingErr := publicstatusprobesetting.Load()
-	if probeSettingErr != nil {
-		common.SysLog("public status probe scheduler disabled: invalid configuration")
-		probeSetting = publicstatusprobesetting.Setting{}
-	} else if probeSetting.Enabled && len(probeSetting.Targets) > 0 {
+	probeSetting := publicstatusprobesetting.CurrentSetting()
+	if probeSetting.Enabled && len(probeSetting.Targets) > 0 {
 		common.SysLog(fmt.Sprintf("public status probe scheduler enabled for %d targets", len(probeSetting.Targets)))
 	}
 	publicStatusProbeDone := publicstatusprobe.Start(probeContext, probeSetting)
@@ -273,6 +275,27 @@ func main() {
 		model.SaveQuotaDataCache()
 	}
 	common.SysLog("server exited")
+}
+
+func initializePublicStatusProbeConfiguration() error {
+	document, err := model.GetPublicStatusProbeConfig()
+	if err == nil {
+		return publicstatusprobesetting.PublishDocument(document)
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	bootstrap, err := publicstatusprobesetting.LoadEnvironmentDocument()
+	if err != nil {
+		common.SysLog("public status probe bootstrap disabled: invalid configuration")
+		return publicstatusprobesetting.PublishDocument(publicstatusprobesetting.DefaultDocument())
+	}
+	document, _, err = model.EnsurePublicStatusProbeConfig(bootstrap)
+	if err != nil {
+		return err
+	}
+	return publicstatusprobesetting.PublishDocument(document)
 }
 
 func InjectUmamiAnalytics() {
