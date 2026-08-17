@@ -499,3 +499,26 @@ func TestNextProbeSlotAlwaysAdvancesWithoutBackfill(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 8, 16, 12, 1, 0, 0, time.UTC), nextProbeSlot(time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC), time.Minute))
 	assert.Equal(t, time.Date(2026, 8, 16, 12, 2, 0, 0, time.UTC), nextProbeSlot(time.Date(2026, 8, 16, 12, 1, 59, 0, time.UTC), time.Minute))
 }
+
+func TestProbeSlotAfterWakeSkipsMissedMinutes(t *testing.T) {
+	planned := time.Date(2026, 8, 17, 10, 1, 0, 0, time.UTC)
+	woke := time.Date(2026, 8, 17, 10, 3, 27, 0, time.UTC)
+
+	assert.Equal(t, time.Date(2026, 8, 17, 10, 3, 0, 0, time.UTC), probeSlotAfterWake(planned, woke, time.Minute))
+}
+
+func TestProbeSlotAfterWakeKeepsOnTimeSlot(t *testing.T) {
+	planned := time.Date(2026, 8, 17, 10, 1, 0, 0, time.UTC)
+
+	assert.Equal(t, planned, probeSlotAfterWake(planned, planned, time.Minute))
+}
+
+func TestSchedulerDerivesProductionRenewIntervalFromEachSlotLeaseDuration(t *testing.T) {
+	scheduler := &Scheduler{}
+	require.Zero(t, scheduler.renewInterval)
+
+	shortLease := 20 * time.Second
+	longLease := 75 * time.Second
+	assert.Equal(t, shortLease/3, scheduler.renewIntervalFor(shortLease))
+	assert.Equal(t, 20*time.Second, scheduler.renewIntervalFor(longLease))
+}

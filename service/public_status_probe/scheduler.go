@@ -135,13 +135,23 @@ func (scheduler *Scheduler) Run(ctx context.Context) {
 			}
 			return
 		case <-timer.C:
-			scheduler.runSlot(ctx, next)
+			woke := scheduler.now().UTC()
+			scheduler.runSlot(ctx, probeSlotAfterWake(next, woke, time.Minute))
 		}
 	}
 }
 
 func nextProbeSlot(now time.Time, interval time.Duration) time.Time {
 	return now.UTC().Truncate(interval).Add(interval)
+}
+
+func probeSlotAfterWake(planned, woke time.Time, interval time.Duration) time.Time {
+	planned = planned.UTC().Truncate(interval)
+	current := woke.UTC().Truncate(interval)
+	if current.After(planned) {
+		return current
+	}
+	return planned
 }
 
 func (scheduler *Scheduler) runSlot(ctx context.Context, slot time.Time) bool {
@@ -197,10 +207,7 @@ func (scheduler *Scheduler) probeTarget(ctx context.Context, target publicstatus
 	}
 	probeContext, cancelProbe := context.WithCancel(ctx)
 	renewalDone := make(chan struct{})
-	renewInterval := scheduler.renewInterval
-	if renewInterval <= 0 {
-		renewInterval = minDuration(leaseDuration/3, 20*time.Second)
-	}
+	renewInterval := scheduler.renewIntervalFor(leaseDuration)
 	go scheduler.renewLease(probeContext, cancelProbe, renewalDone, target.Key, leaseDuration, renewInterval)
 	defer func() {
 		cancelProbe()
@@ -266,6 +273,13 @@ func (scheduler *Scheduler) renewLease(ctx context.Context, cancel context.Cance
 			}
 		}
 	}
+}
+
+func (scheduler *Scheduler) renewIntervalFor(leaseDuration time.Duration) time.Duration {
+	if scheduler.renewInterval > 0 {
+		return scheduler.renewInterval
+	}
+	return minDuration(leaseDuration/3, 20*time.Second)
 }
 
 func (scheduler *Scheduler) completeLease(targetKey string) {
