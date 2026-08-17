@@ -33,6 +33,7 @@ type Document struct {
 
 var (
 	runtimeMu       sync.RWMutex
+	publishMu       sync.Mutex
 	runtimeDocument = DefaultDocument()
 	publishHook     func(int64)
 )
@@ -53,6 +54,10 @@ func DefaultDocument() Document {
 
 func DecodeDocument(raw string) (Document, error) {
 	if len(raw) > maxDocumentJSONBytes || !utf8.ValidString(raw) || common.GetJsonType(json.RawMessage(raw)) != "object" {
+		return Document{}, invalidConfigurationError()
+	}
+	duplicate, err := hasDuplicateJSONObjectMembers(raw)
+	if err != nil || duplicate {
 		return Document{}, invalidConfigurationError()
 	}
 
@@ -181,6 +186,8 @@ func PublishDocument(document Document) error {
 		return err
 	}
 
+	publishMu.Lock()
+	defer publishMu.Unlock()
 	runtimeMu.Lock()
 	runtimeDocument = cloneDocument(normalized)
 	hook := publishHook
@@ -257,4 +264,56 @@ func cloneTargets(targets []Target) []Target {
 
 func invalidConfigurationError() error {
 	return errors.New(invalidConfigurationErrorText)
+}
+
+func hasDuplicateJSONObjectMembers(raw string) (bool, error) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	return scanJSONValueForDuplicateMembers(decoder)
+}
+
+func scanJSONValueForDuplicateMembers(decoder *json.Decoder) (bool, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return false, err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return false, nil
+	}
+
+	switch delimiter {
+	case '{':
+		members := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return false, err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return false, errors.New("invalid JSON object member")
+			}
+			if _, exists := members[key]; exists {
+				return true, nil
+			}
+			members[key] = struct{}{}
+			duplicate, err := scanJSONValueForDuplicateMembers(decoder)
+			if err != nil || duplicate {
+				return duplicate, err
+			}
+		}
+		_, err = decoder.Token()
+		return false, err
+	case '[':
+		for decoder.More() {
+			duplicate, err := scanJSONValueForDuplicateMembers(decoder)
+			if err != nil || duplicate {
+				return duplicate, err
+			}
+		}
+		_, err = decoder.Token()
+		return false, err
+	default:
+		return false, errors.New("invalid JSON delimiter")
+	}
 }

@@ -1,13 +1,67 @@
 package public_status_probe_setting
 
 import (
+	"encoding/json"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func preserveRuntimeState(t *testing.T) {
+	t.Helper()
+	document := CurrentDocument()
+	runtimeMu.RLock()
+	hook := publishHook
+	runtimeMu.RUnlock()
+	t.Cleanup(func() {
+		SetPublishHook(nil)
+		require.NoError(t, PublishDocument(document))
+		SetPublishHook(hook)
+	})
+}
+
+func receiveVersion(t *testing.T, versions <-chan int64) int64 {
+	t.Helper()
+	select {
+	case version := <-versions:
+		return version
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for publish hook")
+		return 0
+	}
+}
+
+func removeDocumentField(t *testing.T, raw, field string) string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	require.NoError(t, common.UnmarshalJsonStr(raw, &fields))
+	delete(fields, field)
+	encoded, err := common.Marshal(fields)
+	require.NoError(t, err)
+	return string(encoded)
+}
+
+func removeTargetField(t *testing.T, raw, field string) string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	require.NoError(t, common.UnmarshalJsonStr(raw, &fields))
+	var targets []map[string]json.RawMessage
+	require.NoError(t, common.Unmarshal(fields["targets"], &targets))
+	require.NotEmpty(t, targets)
+	delete(targets[0], field)
+	encodedTargets, err := common.Marshal(targets)
+	require.NoError(t, err)
+	fields["targets"] = json.RawMessage(encodedTargets)
+	encoded, err := common.Marshal(fields)
+	require.NoError(t, err)
+	return string(encoded)
+}
 
 func validDocument() Document {
 	return Document{
@@ -69,6 +123,57 @@ func TestDecodeDocumentRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestDecodeDocumentRejectsDuplicateObjectMembers(t *testing.T) {
+	raw, err := EncodeDocument(validDocument())
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{name: "top level", old: `"version":2`, new: `"version":2,"version":3`},
+		{name: "target", old: `"channel_id":2`, new: `"channel_id":2,"channel_id":3`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			duplicate := strings.Replace(raw, tt.old, tt.new, 1)
+			require.NotEqual(t, raw, duplicate)
+			_, err := DecodeDocument(duplicate)
+			require.Error(t, err)
+			assert.Equal(t, invalidConfigurationErrorText, err.Error())
+		})
+	}
+}
+
+func TestDecodeDocumentRejectsMissingFields(t *testing.T) {
+	raw, err := EncodeDocument(validDocument())
+	require.NoError(t, err)
+
+	topLevelFields := []string{
+		"schema_version", "version", "enabled", "ping_timeout_seconds",
+		"chat_timeout_seconds", "degraded_latency_ms", "concurrency",
+		"retention_days", "targets",
+	}
+	for _, field := range topLevelFields {
+		t.Run("document_"+field, func(t *testing.T) {
+			_, err := DecodeDocument(removeDocumentField(t, raw, field))
+			require.Error(t, err)
+		})
+	}
+
+	targetFields := []string{
+		"enabled", "key", "group", "display_name", "model", "protocol",
+		"channel_id", "key_index",
+	}
+	for _, field := range targetFields {
+		t.Run("target_"+field, func(t *testing.T) {
+			_, err := DecodeDocument(removeTargetField(t, raw, field))
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestDecodeDocumentRejectsInvalidSchemaVersionAndVersion(t *testing.T) {
 	tests := []string{
 		`{"schema_version":2,"version":1,"enabled":false,"ping_timeout_seconds":8,"chat_timeout_seconds":45,"degraded_latency_ms":6000,"concurrency":5,"retention_days":7,"targets":[]}`,
@@ -119,6 +224,82 @@ func TestDecodeDocumentRejectsNullScalarFields(t *testing.T) {
 			assert.Equal(t, invalidConfigurationErrorText, err.Error())
 		})
 	}
+}
+
+func TestDecodeDocumentRequiresCanonicalIntegers(t *testing.T) {
+	raw, err := EncodeDocument(validDocument())
+	require.NoError(t, err)
+
+	fields := []struct {
+		name  string
+		field string
+		value string
+	}{
+		{name: "schema version", field: "schema_version", value: "1"},
+		{name: "version", field: "version", value: "2"},
+		{name: "ping timeout", field: "ping_timeout_seconds", value: "8"},
+		{name: "chat timeout", field: "chat_timeout_seconds", value: "45"},
+		{name: "degraded latency", field: "degraded_latency_ms", value: "6000"},
+		{name: "concurrency", field: "concurrency", value: "5"},
+		{name: "retention", field: "retention_days", value: "7"},
+		{name: "channel id", field: "channel_id", value: "2"},
+		{name: "key index", field: "key_index", value: "1"},
+	}
+	invalidValues := []struct {
+		name  string
+		value func(string) string
+	}{
+		{name: "string", value: func(value string) string { return strconv.Quote(value) }},
+		{name: "fraction", value: func(value string) string { return value + ".5" }},
+		{name: "exponent", value: func(value string) string { return value + "e0" }},
+	}
+
+	for _, field := range fields {
+		for _, invalid := range invalidValues {
+			t.Run(field.name+"_"+invalid.name, func(t *testing.T) {
+				old := `"` + field.field + `":` + field.value
+				newValue := `"` + field.field + `":` + invalid.value(field.value)
+				invalidRaw := strings.Replace(raw, old, newValue, 1)
+				require.NotEqual(t, raw, invalidRaw)
+				_, err := DecodeDocument(invalidRaw)
+				require.Error(t, err)
+			})
+		}
+	}
+}
+
+func TestDecodeDocumentPreservesInt64VersionAndRejectsOverflow(t *testing.T) {
+	raw, err := EncodeDocument(validDocument())
+	require.NoError(t, err)
+
+	precise := strings.Replace(raw, `"version":2`, `"version":9007199254740993`, 1)
+	document, err := DecodeDocument(precise)
+	require.NoError(t, err)
+	assert.Equal(t, int64(9007199254740993), document.Version)
+
+	maximum := strings.Replace(raw, `"version":2`, `"version":9223372036854775807`, 1)
+	document, err = DecodeDocument(maximum)
+	require.NoError(t, err)
+	assert.Equal(t, int64(9223372036854775807), document.Version)
+
+	overflow := strings.Replace(raw, `"version":2`, `"version":9223372036854775808`, 1)
+	_, err = DecodeDocument(overflow)
+	require.Error(t, err)
+}
+
+func TestDecodeDocumentAcceptsExactlyTwentyTargets(t *testing.T) {
+	document := validDocument()
+	document.Targets = make([]Target, maxTargets)
+	for index := range document.Targets {
+		document.Targets[index] = validDocument().Targets[0]
+		document.Targets[index].Key = "target-" + strconv.Itoa(index)
+	}
+	raw, err := EncodeDocument(document)
+	require.NoError(t, err)
+
+	decoded, err := DecodeDocument(raw)
+	require.NoError(t, err)
+	assert.Len(t, decoded.Targets, maxTargets)
 }
 
 func TestValidateAndNormalizeDocumentScalarBoundaries(t *testing.T) {
@@ -215,11 +396,8 @@ func TestDecodeDocumentRejectsInvalidUTF8AndOversizedInput(t *testing.T) {
 }
 
 func TestPublishDocumentUsesImmutableSnapshotsAndCallsHook(t *testing.T) {
+	preserveRuntimeState(t)
 	require.NoError(t, PublishDocument(DefaultDocument()))
-	t.Cleanup(func() {
-		SetPublishHook(nil)
-		require.NoError(t, PublishDocument(DefaultDocument()))
-	})
 
 	called := make(chan int64, 1)
 	SetPublishHook(func(version int64) {
@@ -236,7 +414,7 @@ func TestPublishDocumentUsesImmutableSnapshotsAndCallsHook(t *testing.T) {
 	assert.Equal(t, "target-b", first.Targets[0].Key)
 	first.Targets[0].Key = "snapshot-mutated"
 	assert.Equal(t, "target-b", CurrentDocument().Targets[0].Key)
-	assert.Equal(t, int64(2), <-called)
+	assert.Equal(t, int64(2), receiveVersion(t, called))
 
 	invalid := validDocument()
 	invalid.Version = 3
@@ -250,8 +428,73 @@ func TestPublishDocumentUsesImmutableSnapshotsAndCallsHook(t *testing.T) {
 	}
 }
 
+func TestPublishDocumentSerializesConcurrentHookNotifications(t *testing.T) {
+	preserveRuntimeState(t)
+	firstEntered := make(chan struct{})
+	secondEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	t.Cleanup(release)
+
+	var hook func(int64)
+	hook = func(version int64) {
+		_ = CurrentDocument()
+		SetPublishHook(hook)
+		switch version {
+		case 10:
+			close(firstEntered)
+			<-releaseFirst
+		case 11:
+			close(secondEntered)
+		}
+	}
+	SetPublishHook(hook)
+
+	first := validDocument()
+	first.Version = 10
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- PublishDocument(first) }()
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first hook")
+	}
+
+	second := validDocument()
+	second.Version = 11
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- PublishDocument(second) }()
+	outOfOrder := false
+	select {
+	case <-secondEntered:
+		outOfOrder = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+
+	select {
+	case err := <-firstDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first publish")
+	}
+	select {
+	case err := <-secondDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second publish")
+	}
+	select {
+	case <-secondEntered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second hook")
+	}
+	assert.False(t, outOfOrder, "second hook ran before first hook completed")
+}
+
 func TestCurrentSettingFiltersDisabledTargets(t *testing.T) {
-	t.Cleanup(func() { require.NoError(t, PublishDocument(DefaultDocument())) })
+	preserveRuntimeState(t)
 	require.NoError(t, PublishDocument(validDocument()))
 
 	setting := CurrentSetting()
