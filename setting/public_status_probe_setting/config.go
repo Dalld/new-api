@@ -37,10 +37,13 @@ type publishNotification struct {
 }
 
 var (
-	runtimeMu          sync.RWMutex
-	publishMu          sync.Mutex
-	runtimeDocument    = DefaultDocument()
-	publishHook        func(int64)
+	runtimeMu       sync.RWMutex
+	publishMu       sync.Mutex
+	runtimeDocument = DefaultDocument()
+	publishHook     func(int64)
+
+	// Publish is a low-frequency control-plane operation. The queue is intentionally
+	// unbounded because blocking producers would deadlock hooks that publish again.
 	publishQueue       []publishNotification
 	publishDispatching bool
 )
@@ -205,21 +208,17 @@ func PublishDocument(document Document) error {
 	}
 	publishDispatching = true
 	publishMu.Unlock()
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			publishMu.Lock()
-			publishDispatching = false
-			publishMu.Unlock()
-			panic(recovered)
-		}
-	}()
 
+	var firstPanic any
 	for {
 		publishMu.Lock()
 		if len(publishQueue) == 0 {
 			publishQueue = nil
 			publishDispatching = false
 			publishMu.Unlock()
+			if firstPanic != nil {
+				panic(firstPanic)
+			}
 			return nil
 		}
 		notification := publishQueue[0]
@@ -227,10 +226,21 @@ func PublishDocument(document Document) error {
 		publishQueue = publishQueue[1:]
 		publishMu.Unlock()
 
-		if notification.hook != nil {
-			notification.hook(notification.version)
+		if recovered := callPublishHook(notification); recovered != nil && firstPanic == nil {
+			firstPanic = recovered
 		}
 	}
+}
+
+func callPublishHook(notification publishNotification) (recovered any) {
+	if notification.hook == nil {
+		return nil
+	}
+	defer func() {
+		recovered = recover()
+	}()
+	notification.hook(notification.version)
+	return nil
 }
 
 func CurrentDocument() Document {

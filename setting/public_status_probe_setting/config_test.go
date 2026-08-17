@@ -525,6 +525,58 @@ func TestPublishDocumentAllowsHookToPublish(t *testing.T) {
 	assert.Equal(t, int64(21), CurrentDocument().Version)
 }
 
+func TestPublishDocumentDrainsQueuedHooksBeforeRepanicking(t *testing.T) {
+	preserveRuntimeState(t)
+	const panicValue = "publish hook panic"
+	firstEntered := make(chan struct{})
+	secondCalled := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	t.Cleanup(release)
+
+	SetPublishHook(func(version int64) {
+		switch version {
+		case 30:
+			close(firstEntered)
+			<-releaseFirst
+			panic(panicValue)
+		case 31:
+			close(secondCalled)
+		}
+	})
+
+	first := validDocument()
+	first.Version = 30
+	recovered := make(chan any, 1)
+	go func() {
+		defer func() { recovered <- recover() }()
+		_ = PublishDocument(first)
+	}()
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for panicking hook")
+	}
+
+	second := validDocument()
+	second.Version = 31
+	require.NoError(t, PublishDocument(second))
+	release()
+
+	select {
+	case value := <-recovered:
+		assert.Equal(t, panicValue, value)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for publish panic")
+	}
+	select {
+	case <-secondCalled:
+	case <-time.After(time.Second):
+		t.Fatal("queued hook was not drained before repanicking")
+	}
+}
+
 func TestCurrentSettingFiltersDisabledTargets(t *testing.T) {
 	preserveRuntimeState(t)
 	require.NoError(t, PublishDocument(validDocument()))
