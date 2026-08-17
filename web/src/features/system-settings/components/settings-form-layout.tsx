@@ -42,6 +42,7 @@ type SettingsSwitchFieldProps = SettingsSwitchRowProps & {
   label: ReactNode
   description?: ReactNode
   disabled?: boolean
+  switchId?: string
 }
 
 const settingsSwitchRowClassName =
@@ -112,18 +113,25 @@ export function SettingsSwitchField({
   label,
   description,
   disabled,
+  switchId,
   className,
   ...props
 }: SettingsSwitchFieldProps) {
+  const switchAriaLabel =
+    switchId || typeof label !== 'string' ? undefined : label
   return (
     <SettingsSwitchRow className={className} {...props}>
       <SettingsSwitchContent>
-        <Label className='text-sm font-medium'>{label}</Label>
+        <Label htmlFor={switchId} className='text-sm font-medium'>
+          {label}
+        </Label>
         {description ? (
           <p className='text-muted-foreground text-xs'>{description}</p>
         ) : null}
       </SettingsSwitchContent>
       <Switch
+        id={switchId}
+        aria-label={switchAriaLabel}
         checked={checked}
         onCheckedChange={onCheckedChange}
         disabled={disabled}
