@@ -202,3 +202,31 @@ func TestMapProbeModelRejectsMalformedAndCyclicMappings(t *testing.T) {
 		assert.Equal(t, ErrorInvalidTarget, ErrorCodeOf(err))
 	}
 }
+
+func TestValidateTargetDoesNotMutateChannel(t *testing.T) {
+	db := newProbeLoaderTestDB(t)
+	mapping := `{"public-model":"upstream-model"}`
+	channel := insertProbeChannel(t, db, model.Channel{
+		Id:           99,
+		Type:         constant.ChannelTypeOpenAI,
+		Key:          "first-key\nsecond-key",
+		ModelMapping: &mapping,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:           true,
+			MultiKeySize:         2,
+			MultiKeyStatusList:   map[int]int{0: common.ChannelStatusEnabled, 1: common.ChannelStatusEnabled},
+			MultiKeyPollingIndex: 1,
+		},
+	})
+	var before model.Channel
+	require.NoError(t, db.First(&before, channel.Id).Error)
+
+	target := probeTarget(channel.Id, publicstatusprobesetting.ProtocolOpenAIChat)
+	target.KeyIndex = 1
+
+	require.NoError(t, NewDBTargetLoader(db).ValidateTarget(context.Background(), target))
+
+	var after model.Channel
+	require.NoError(t, db.First(&after, channel.Id).Error)
+	assert.Equal(t, before, after)
+}

@@ -23,6 +23,15 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.POST("/setup", anonymousRequestBodyLimit, controller.PostSetup)
 		apiRouter.GET("/status", controller.GetStatus)
 		apiRouter.GET("/status/probes", middleware.PublicStatusProbeRateLimit(), controller.GetPublicStatusProbes)
+		publicStatusProbeAdminRoute := apiRouter.Group("/public-status-probe")
+		publicStatusProbeAdminRoute.Use(middleware.RootAuth(), middleware.DisableCache())
+		{
+			publicStatusProbeAdminRoute.GET("/config", controller.GetPublicStatusProbeConfig)
+			publicStatusProbeAdminRoute.PUT("/config", controller.UpdatePublicStatusProbeConfig)
+			publicStatusProbeAdminRoute.POST("/targets", controller.CreatePublicStatusProbeTarget)
+			publicStatusProbeAdminRoute.PUT("/targets/:key", controller.UpdatePublicStatusProbeTarget)
+			publicStatusProbeAdminRoute.DELETE("/targets/:key", controller.DeletePublicStatusProbeTarget)
+		}
 		apiRouter.GET("/uptime/status", controller.GetUptimeKumaStatus)
 		apiRouter.GET("/models", middleware.UserAuth(), controller.DashboardListModels)
 		apiRouter.GET("/status/test", middleware.AdminAuth(), controller.TestStatus)

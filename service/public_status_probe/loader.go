@@ -28,6 +28,10 @@ type TargetLoader interface {
 	Load(context.Context, publicstatusprobesetting.Target) (LoadedTarget, error)
 }
 
+type TargetValidator interface {
+	ValidateTarget(context.Context, publicstatusprobesetting.Target) error
+}
+
 type DBTargetLoader struct {
 	db *gorm.DB
 }
@@ -122,6 +126,11 @@ func (loader *DBTargetLoader) Load(ctx context.Context, target publicstatusprobe
 		return LoadedTarget{}, err
 	}
 	return loaded, nil
+}
+
+func (loader *DBTargetLoader) ValidateTarget(ctx context.Context, target publicstatusprobesetting.Target) error {
+	_, err := loader.Load(ctx, target)
+	return err
 }
 
 func protocolForTarget(protocol publicstatusprobesetting.Protocol, channelType int) (Protocol, error) {

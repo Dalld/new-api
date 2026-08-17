@@ -80,6 +80,32 @@ func TestPublicStatusAndAffiliateRoutesAreRegistered(t *testing.T) {
 	assert.False(t, exists, "public status probe limit must only be registered on GET")
 }
 
+func TestPublicStatusProbeAdminRoutesAreRegisteredAndRootOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	SetApiRouter(engine)
+
+	routes := map[string]struct{}{}
+	for _, route := range engine.Routes() {
+		routes[route.Method+" "+route.Path] = struct{}{}
+	}
+	for _, route := range []string{
+		http.MethodGet + " /api/public-status-probe/config",
+		http.MethodPut + " /api/public-status-probe/config",
+		http.MethodPost + " /api/public-status-probe/targets",
+		http.MethodPut + " /api/public-status-probe/targets/:key",
+		http.MethodDelete + " /api/public-status-probe/targets/:key",
+	} {
+		_, exists := routes[route]
+		assert.True(t, exists, "missing route %s", route)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/public-status-probe/config", nil)
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	assert.Equal(t, http.StatusUnauthorized, response.Code)
+}
+
 func TestAffiliateOverviewRouteRejectsAnonymousRequests(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
