@@ -413,7 +413,7 @@ func TestChallengeNonceIsRandomAndExplicit(t *testing.T) {
 	assert.NotContains(t, first.Expected, "secret")
 }
 
-func TestContainsExpectedTokenAllowsExplicitWrappedResponses(t *testing.T) {
+func TestContainsExpectedTokenAllowsShortWrappedResponses(t *testing.T) {
 	const token = "psp_0123456789abcdef01234567"
 	const wrongToken = "psp_aaaaaaaaaaaaaaaaaaaaaaaa"
 	tests := []struct {
@@ -427,14 +427,14 @@ func TestContainsExpectedTokenAllowsExplicitWrappedResponses(t *testing.T) {
 		{name: "chinese answer label and punctuation", value: "答案是：" + token + "。", want: true},
 		{name: "markdown wrapper", value: "`" + token + "`", want: true},
 		{name: "punctuation suffix", value: token + ".", want: true},
-		{name: "combined label and markdown", value: "answer: `" + token + "`", want: false},
+		{name: "short explanation", value: "The answer is " + token, want: true},
+		{name: "short token label", value: "Here is the token: " + token, want: true},
 		{name: "prompt echo", value: "Reply with exactly this token and no other text: " + token, want: false},
-		{name: "short prompt echo", value: "reply with token: " + token, want: false},
-		{name: "explanation", value: "The answer is " + token, want: false},
 		{name: "repeated token", value: token + " " + token, want: false},
 		{name: "wrong token before expected", value: wrongToken + "; " + token, want: false},
 		{name: "prefixed", value: "prefix" + token, want: false},
 		{name: "suffixed", value: token + "suffix", want: false},
+		{name: "combined label and markdown", value: "answer: `" + token + "`", want: true},
 		{name: "invalid expected shape", value: token, want: false},
 		{name: "empty expected", value: token, want: false},
 	}
@@ -474,7 +474,7 @@ func TestRunConversationValidationAndLatencyStates(t *testing.T) {
 	}{
 		{name: "success normalized case", output: "  PSP_0123456789ABCDEF01234567  ", elapsed: 1200 * time.Millisecond, state: StateOperational, latency: 1200},
 		{name: "degraded", output: "psp_0123456789abcdef01234567", elapsed: 6001 * time.Millisecond, state: StateDegraded, latency: 6001},
-		{name: "prompt echo", output: "reply with token psp_0123456789abcdef01234567", elapsed: 500 * time.Millisecond, state: StateValidationFailed, code: ErrorValidationFailed, latency: 500},
+		{name: "prompt echo", output: "Reply with exactly this token and no other text: psp_0123456789abcdef01234567", elapsed: 500 * time.Millisecond, state: StateValidationFailed, code: ErrorValidationFailed, latency: 500},
 		{name: "answer label", output: "answer: psp_0123456789abcdef01234567", elapsed: 500 * time.Millisecond, state: StateOperational, latency: 500},
 		{name: "nonce mismatch", output: "psp_aaaaaaaaaaaaaaaaaaaaaaaa", elapsed: 400 * time.Millisecond, state: StateValidationFailed, code: ErrorValidationFailed, latency: 400},
 		{name: "empty", output: " \n\t ", elapsed: 300 * time.Millisecond, state: StateFailed, code: ErrorEmptyResponse, latency: 300},

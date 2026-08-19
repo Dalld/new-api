@@ -282,20 +282,19 @@ describe('public probe status page', () => {
 
     const cardHeader = card.querySelector<HTMLElement>('header')
     assert.ok(cardHeader)
-    assert.match(cardHeader.className, /flex-col/)
-    assert.match(cardHeader.className, /sm:flex-row/)
+    assert.match(cardHeader.className, /justify-between/)
+    assert.doesNotMatch(cardHeader.className, /flex-col/)
 
     const stateBadge = cardHeader.querySelector<HTMLElement>(
       '[data-slot="badge"]'
     )
     assert.ok(stateBadge)
-    assert.match(stateBadge.className, /max-w-full/)
-    assert.match(stateBadge.className, /sm:max-w-\[55%\]/)
+    assert.match(stateBadge.className, /max-w-\[55%\]/)
+    assert.match(stateBadge.className, /shrink-0/)
 
     const cardFooter = card.querySelector<HTMLElement>('footer')
     assert.ok(cardFooter)
-    assert.match(cardFooter.className, /grid-cols-1/)
-    assert.match(cardFooter.className, /sm:grid-cols-2/)
+    assert.match(cardFooter.className, /grid-cols-2/)
 
     const buttons = card.querySelectorAll<HTMLButtonElement>(
       '[data-testid="status-segment"]'

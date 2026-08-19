@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 var defaultHTTPClient = sync.OnceValue(NewHTTPClient)
@@ -279,23 +280,21 @@ func containsExpectedToken(value, expected string) bool {
 		return false
 	}
 
-	value = normalizedOutput(value)
-	for _, wrapped := range []string{
-		expected,
-		"answer: " + expected,
-		"答案是：" + expected,
-		"`" + expected + "`",
-		"*" + expected + "*",
-		"**" + expected + "**",
-		"__" + expected + "__",
-	} {
-		for _, suffix := range []string{"", ".", "。", "!", "！", "?", "？"} {
-			if value == wrapped+suffix {
-				return true
+	valueTokens := validationTokens(value)
+	if len(valueTokens) == 0 || len(valueTokens) > maxValidationTokens {
+		return false
+	}
+
+	nonceCount := 0
+	for _, token := range valueTokens {
+		if strings.HasPrefix(token, "psp_") {
+			nonceCount++
+			if token != expected {
+				return false
 			}
 		}
 	}
-	return false
+	return nonceCount == 1
 }
 
 func isValidChallengeNonce(value string) bool {
@@ -308,6 +307,16 @@ func isValidChallengeNonce(value string) bool {
 		}
 	}
 	return true
+}
+
+func validationTokens(value string) []string {
+	normalized := strings.Map(func(r rune) rune {
+		if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) {
+			return unicode.ToLower(r)
+		}
+		return ' '
+	}, value)
+	return strings.Fields(normalized)
 }
 
 func elapsedMilliseconds(start, end time.Time) int64 {

@@ -12,6 +12,7 @@ const (
 	DefaultConversationTimeout = 45 * time.Second
 	DefaultDegradedThreshold   = 6 * time.Second
 	MaxResponseBytes           = 1 << 20
+	maxValidationTokens        = 6
 )
 
 type Protocol uint8

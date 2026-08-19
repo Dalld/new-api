@@ -301,7 +301,7 @@ export function StatusTimeline({
                     }
                   />
                   <TooltipContent
-                    className='bg-popover text-popover-foreground ring-foreground/10 w-64 flex-col items-stretch gap-3 p-3 ring-1'
+                    className='bg-popover text-popover-foreground ring-foreground/10 w-64 max-w-[calc(100vw-2rem)] flex-col items-stretch gap-3 p-3 ring-1'
                     side='top'
                     sideOffset={8}
                     data-testid='probe-point-detail'

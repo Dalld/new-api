@@ -130,8 +130,8 @@ export function GroupStatusRow({
       data-state={target.state}
       data-testid='target-status-card'
     >
-      <header className='flex min-w-0 flex-col items-start gap-3 sm:flex-row sm:justify-between'>
-        <div className='min-w-0'>
+      <header className='flex min-w-0 items-start justify-between gap-3'>
+        <div className='min-w-0 flex-1'>
           <h3
             className='truncate text-base font-semibold'
             title={target.display_name}
@@ -148,15 +148,13 @@ export function GroupStatusRow({
         <Badge
           variant='outline'
           className={cn(
-            'h-6 max-w-full self-start gap-1 whitespace-normal sm:max-w-[55%] sm:whitespace-nowrap',
+            'h-6 max-w-[55%] shrink-0 gap-1 whitespace-normal',
             presentation.badgeClassName
           )}
           title={t(presentation.label)}
         >
           <StateIcon className='shrink-0' aria-hidden='true' />
-          <span className='break-words sm:truncate'>
-            {t(presentation.label)}
-          </span>
+          <span className='break-words'>{t(presentation.label)}</span>
         </Badge>
       </header>
 
@@ -199,16 +197,16 @@ export function GroupStatusRow({
         <StatusTimeline points={points} targetName={target.display_name} />
       </div>
 
-      <footer className='text-muted-foreground grid min-h-9 grid-cols-1 gap-3 border-t pt-3 text-xs sm:grid-cols-2'>
+      <footer className='text-muted-foreground grid min-h-9 grid-cols-2 gap-3 border-t pt-3 text-xs'>
         <div className='min-w-0'>
           <span className='block'>{t('Last checked')}</span>
-          <strong className='text-foreground mt-0.5 block font-medium break-words sm:truncate'>
+          <strong className='text-foreground mt-0.5 block font-medium break-words'>
             {latestUpdate ?? t('No observations yet')}
           </strong>
         </div>
-        <div className='min-w-0 sm:text-right'>
+        <div className='min-w-0 text-right'>
           <span className='block'>{t('Next check')}</span>
-          <strong className='text-foreground mt-0.5 block font-medium break-words sm:truncate'>
+          <strong className='text-foreground mt-0.5 block font-medium break-words'>
             {nextUpdate ?? '--'}
           </strong>
         </div>

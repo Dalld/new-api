@@ -326,8 +326,8 @@ export function GroupProbeStatusContent({
 
   return (
     <div className='mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-10'>
-      <header className='border-border flex flex-col gap-5 border-b pb-6 sm:flex-row sm:items-end sm:justify-between'>
-        <div className='min-w-0 space-y-3'>
+      <header className='border-border flex flex-row flex-wrap items-end justify-between gap-x-5 gap-y-4 border-b pb-6'>
+        <div className='min-w-0 flex-1 space-y-3'>
           <div className='text-primary flex items-center gap-2 text-sm font-medium'>
             <Activity className='size-4' aria-hidden='true' />
             <span>{t('Synthetic probes')}</span>
@@ -347,10 +347,10 @@ export function GroupProbeStatusContent({
           </div>
         </div>
 
-        <div className='flex min-h-9 items-center gap-2 self-stretch sm:self-auto'>
-          <div className='text-muted-foreground flex min-w-0 flex-1 items-center gap-2 text-sm sm:flex-none'>
+        <div className='flex min-h-9 shrink-0 items-center gap-2'>
+          <div className='text-muted-foreground flex min-w-0 items-center gap-2 text-sm'>
             <Clock3 className='size-4 shrink-0' aria-hidden='true' />
-            <span className='truncate'>
+            <span className='max-w-[min(52vw,18rem)] truncate'>
               {data
                 ? t('Updated {{time}}', {
                     time: formatGeneratedAt(data.generated_at),
