@@ -274,9 +274,40 @@ func transportOrProbeErrorCode(ctx context.Context, err error) ErrorCode {
 }
 
 func containsExpectedToken(value, expected string) bool {
-	value = normalizedOutput(value)
 	expected = normalizedOutput(expected)
-	return expected != "" && value == expected
+	if !isValidChallengeNonce(expected) {
+		return false
+	}
+
+	value = normalizedOutput(value)
+	for _, wrapped := range []string{
+		expected,
+		"answer: " + expected,
+		"答案是：" + expected,
+		"`" + expected + "`",
+		"*" + expected + "*",
+		"**" + expected + "**",
+		"__" + expected + "__",
+	} {
+		for _, suffix := range []string{"", ".", "。", "!", "！", "?", "？"} {
+			if value == wrapped+suffix {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isValidChallengeNonce(value string) bool {
+	if len(value) != len("psp_")+24 || !strings.HasPrefix(value, "psp_") {
+		return false
+	}
+	for _, char := range value[len("psp_"):] {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func elapsedMilliseconds(start, end time.Time) int64 {
