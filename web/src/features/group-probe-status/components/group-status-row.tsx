@@ -132,12 +132,12 @@ export function GroupStatusRow({
     >
       <header className='flex min-w-0 flex-col items-start gap-3 sm:flex-row sm:justify-between'>
         <div className='min-w-0'>
-          <h2
+          <h3
             className='truncate text-base font-semibold'
             title={target.display_name}
           >
             {target.display_name}
-          </h2>
+          </h3>
           <p
             className='text-muted-foreground mt-1 truncate text-sm'
             title={target.model}

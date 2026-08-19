@@ -194,6 +194,16 @@ describe('public probe status page', () => {
     })
     assert.match(empty.container.textContent ?? '', /No probe targets/i)
     assert.ok(empty.container.querySelector('[data-layout="stable"]'))
+    assert.equal(
+      empty.container.querySelectorAll('[data-testid="status-target-group"]')
+        .length,
+      0
+    )
+    assert.equal(
+      empty.container.querySelectorAll('[data-testid="status-group-heading"]')
+        .length,
+      0
+    )
     await empty.cleanup()
 
     const partial = await renderStatus({
@@ -238,6 +248,15 @@ describe('public probe status page', () => {
       /Collecting data/i
     )
     await unknown.cleanup()
+  })
+
+  test('uses one main landmark while preserving the public heading hierarchy', async () => {
+    const rendered = await renderStatus({ data: statusData })
+    assert.equal(rendered.container.querySelectorAll('main').length, 0)
+    assert.equal(rendered.container.querySelectorAll('h1').length, 1)
+    assert.equal(rendered.container.querySelectorAll('h2').length, 1)
+    assert.equal(rendered.container.querySelectorAll('h3').length, 1)
+    await rendered.cleanup()
   })
 
   test('renders responsive target cards with dual latency, availability, and exactly 60 buttons', async () => {
@@ -305,6 +324,94 @@ describe('public probe status page', () => {
     )
     assert.match(buttons[0]?.firstElementChild?.className ?? '', /w-full/)
     assert.match(buttons[0]?.firstElementChild?.className ?? '', /max-w-2/)
+    await rendered.cleanup()
+  })
+
+  test('groups targets by first appearance while preserving target order and public fields', async () => {
+    const targetWithPrivateFields = {
+      ...primaryTarget,
+      key: 'asia-first',
+      group: 'Asia Pacific',
+      display_name: 'Asia First',
+      channel_id: 42,
+      key_index: 1,
+      base_url: 'https://private.example',
+    }
+    const targets: PublicProbeData['targets'] = [
+      targetWithPrivateFields,
+      {
+        ...primaryTarget,
+        key: 'europe-first',
+        group: 'Europe',
+        display_name: 'Europe First',
+      },
+      {
+        ...primaryTarget,
+        key: 'asia-second',
+        group: 'Asia Pacific',
+        display_name: 'Asia Second',
+      },
+      {
+        ...primaryTarget,
+        key: 'americas-first',
+        group: 'Americas',
+        display_name: 'Americas First',
+      },
+      {
+        ...primaryTarget,
+        key: 'europe-second',
+        group: 'Europe',
+        display_name: 'Europe Second',
+      },
+    ]
+    const rendered = await renderStatus({
+      data: { ...statusData, targets },
+    })
+
+    const groups = [
+      ...rendered.container.querySelectorAll<HTMLElement>(
+        '[data-testid="status-target-group"]'
+      ),
+    ]
+    assert.deepEqual(
+      groups.map(
+        (group) =>
+          group.querySelector('[data-testid="status-group-heading"]')
+            ?.textContent
+      ),
+      ['Asia Pacific', 'Europe', 'Americas']
+    )
+    assert.deepEqual(
+      groups.map((group) =>
+        [
+          ...group.querySelectorAll<HTMLElement>(
+            '[data-testid="target-status-card"]'
+          ),
+        ].map((card) => card.querySelector('h3')?.textContent)
+      ),
+      [
+        ['Asia First', 'Asia Second'],
+        ['Europe First', 'Europe Second'],
+        ['Americas First'],
+      ]
+    )
+    assert.ok(
+      groups.every(
+        (group) =>
+          group.tagName === 'SECTION' &&
+          !group.className.includes('border') &&
+          group.querySelector('[data-testid="status-target-grid"]')
+      )
+    )
+
+    const publicText = rendered.container.textContent?.toLowerCase() ?? ''
+    for (const privateValue of [
+      'channel_id',
+      'key_index',
+      'https://private.example',
+    ]) {
+      assert.equal(publicText.includes(privateValue), false)
+    }
     await rendered.cleanup()
   })
 

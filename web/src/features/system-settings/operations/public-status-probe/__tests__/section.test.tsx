@@ -291,7 +291,9 @@ describe('public status probe management section', () => {
 
   test('saves global values, displays disabled groups, and maps toggle and named delete safely', async () => {
     let config = makeConfig()
+    config.targets[0].key_index = 2
     const putPayloads: Array<Record<string, unknown>> = []
+    let resolveGlobalSave!: () => void
     let deletedUrl = ''
     apiClient.get = async () => success(config)
     apiClient.put = async (url, payload) => {
@@ -304,6 +306,9 @@ describe('public status probe management section', () => {
           version: config.version + 1,
           channels: config.channels,
           targets: config.targets,
+        })
+        return new Promise((resolve) => {
+          resolveGlobalSave = () => resolve(success(config))
         })
       } else {
         const input = payload as Record<string, unknown>
@@ -330,15 +335,33 @@ describe('public status probe management section', () => {
     )
     assert.equal(document.body.textContent?.includes('Disabled'), true)
     assert.equal(document.body.textContent?.includes('Primary'), true)
+    assert.equal(document.body.textContent?.includes('Key index: 2'), true)
     assert.equal(getInput('Probe interval (seconds)').readOnly, true)
 
     await changeInput(getInput('Ping timeout (seconds)'), '9')
+    const dirtyBeforeUnload = new domWindow.Event('beforeunload', {
+      cancelable: true,
+    })
+    domWindow.dispatchEvent(dirtyBeforeUnload)
+    assert.equal(dirtyBeforeUnload.defaultPrevented, true)
     await act(async () => findButton('Save probe settings', true).click())
     await waitForCondition(
       () => putPayloads.length === 1,
       'global save missing'
     )
     assert.equal(putPayloads[0]?.ping_timeout_seconds, 9)
+    const savingBeforeUnload = new domWindow.Event('beforeunload', {
+      cancelable: true,
+    })
+    domWindow.dispatchEvent(savingBeforeUnload)
+    assert.equal(savingBeforeUnload.defaultPrevented, true)
+
+    await act(async () => resolveGlobalSave())
+    const cleanBeforeUnload = new domWindow.Event('beforeunload', {
+      cancelable: true,
+    })
+    domWindow.dispatchEvent(cleanBeforeUnload)
+    assert.equal(cleanBeforeUnload.defaultPrevented, false)
 
     const toggle = document.querySelector<HTMLElement>(
       '[aria-label="Enable Codex"]'

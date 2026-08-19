@@ -34,6 +34,7 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 
+import { FormNavigationGuard } from '../../../components/form-navigation-guard'
 import {
   SettingsForm,
   SettingsFormGrid,
@@ -119,91 +120,99 @@ export function GlobalSettingsForm({
   }
 
   return (
-    <section
-      aria-labelledby='public-probe-global-settings'
-      className='space-y-4'
-    >
-      <div>
-        <h4 id='public-probe-global-settings' className='text-sm font-semibold'>
-          {t('Global probe settings')}
-        </h4>
-        <p className='text-muted-foreground mt-1 text-sm'>
-          {t('Controls the public status probes without affecting routing.')}
-        </p>
-      </div>
+    <>
+      <FormNavigationGuard when={form.formState.isDirty} />
+      <section
+        aria-labelledby='public-probe-global-settings'
+        className='space-y-4'
+      >
+        <div>
+          <h4
+            id='public-probe-global-settings'
+            className='text-sm font-semibold'
+          >
+            {t('Global probe settings')}
+          </h4>
+          <p className='text-muted-foreground mt-1 text-sm'>
+            {t('Controls the public status probes without affecting routing.')}
+          </p>
+        </div>
 
-      {conflict ? (
-        <Alert>
-          <AlertTriangle />
-          <AlertTitle>{t('Configuration changed')}</AlertTitle>
-          <AlertDescription>
-            {t('The latest version was loaded. Your unsaved values were kept.')}
-          </AlertDescription>
-        </Alert>
-      ) : null}
+        {conflict ? (
+          <Alert>
+            <AlertTriangle />
+            <AlertTitle>{t('Configuration changed')}</AlertTitle>
+            <AlertDescription>
+              {t(
+                'The latest version was loaded. Your unsaved values were kept.'
+              )}
+            </AlertDescription>
+          </Alert>
+        ) : null}
 
-      <Form {...form}>
-        <SettingsForm
-          onSubmit={form.handleSubmit(handleSubmit)}
-          autoComplete='off'
-        >
-          <SettingsPageFormActions
-            onSave={form.handleSubmit(handleSubmit)}
-            isSaving={isSaving || form.formState.isSubmitting}
-            isSaveDisabled={!form.formState.isDirty}
-            saveLabel={t('Save probe settings')}
-          />
+        <Form {...form}>
+          <SettingsForm
+            onSubmit={form.handleSubmit(handleSubmit)}
+            autoComplete='off'
+          >
+            <SettingsPageFormActions
+              onSave={form.handleSubmit(handleSubmit)}
+              isSaving={isSaving || form.formState.isSubmitting}
+              isSaveDisabled={!form.formState.isDirty}
+              saveLabel={t('Save probe settings')}
+            />
 
-          <SettingsSwitchField
-            switchId='public-status-probe-enabled'
-            checked={form.watch('enabled')}
-            onCheckedChange={(checked) =>
-              form.setValue('enabled', checked, { shouldDirty: true })
-            }
-            label={t('Enable public status probes')}
-            description={t(
-              'Disabled targets remain configured and visible here.'
-            )}
-            disabled={isSaving}
-          />
+            <SettingsSwitchField
+              switchId='public-status-probe-enabled'
+              checked={form.watch('enabled')}
+              onCheckedChange={(checked) =>
+                form.setValue('enabled', checked, { shouldDirty: true })
+              }
+              label={t('Enable public status probes')}
+              description={t(
+                'Disabled targets remain configured and visible here.'
+              )}
+              disabled={isSaving}
+            />
 
-          <SettingsFormGrid>
-            <FormItem>
-              <FormLabel>{t('Probe interval (seconds)')}</FormLabel>
-              <FormControl>
-                <Input value={60} readOnly aria-readonly='true' />
-              </FormControl>
-              <FormDescription>
-                {t('The scheduler runs on a fixed 60-second interval.')}
-              </FormDescription>
-            </FormItem>
+            <SettingsFormGrid>
+              <FormItem>
+                <FormLabel>{t('Probe interval (seconds)')}</FormLabel>
+                <FormControl>
+                  <Input value={60} readOnly aria-readonly='true' />
+                </FormControl>
+                <FormDescription>
+                  {t('The scheduler runs on a fixed 60-second interval.')}
+                </FormDescription>
+              </FormItem>
 
-            {numberFields.map(({ name, label, min, max }) => (
-              <FormField
-                key={name}
-                control={form.control}
-                name={name}
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t(label)}</FormLabel>
-                    <FormControl>
-                      <Input
-                        type='number'
-                        min={min}
-                        max={max}
-                        step={1}
-                        disabled={isSaving}
-                        {...safeNumberFieldProps(field)}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            ))}
-          </SettingsFormGrid>
-        </SettingsForm>
-      </Form>
-    </section>
+              {numberFields.map(({ name, label, min, max }) => (
+                <FormField
+                  key={name}
+                  control={form.control}
+                  name={name}
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t(label)}</FormLabel>
+                      <FormControl>
+                        <Input
+                          type='number'
+                          min={min}
+                          max={max}
+                          step={1}
+                          disabled={isSaving}
+                          {...safeNumberFieldProps(field)}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              ))}
+            </SettingsFormGrid>
+          </SettingsForm>
+        </Form>
+      </section>
+    </>
   )
 }

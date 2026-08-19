@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -130,6 +132,30 @@ func registerPublicStatusProbeAdminTestRoutes(engine *gin.Engine) {
 		admin.PUT("/targets/:key", UpdatePublicStatusProbeTarget)
 		admin.DELETE("/targets/:key", DeletePublicStatusProbeTarget)
 	}
+}
+
+func publicStatusProbeAdminOptionRaw(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	var option model.Option
+	require.NoError(t, db.Where("key = ?", publicstatusprobesetting.OptionKey).Take(&option).Error)
+	return option.Value
+}
+
+func registerPublicStatusProbeAdminChannelQueryGuard(
+	t *testing.T,
+	db *gorm.DB,
+	callbackName string,
+	guard func(*gorm.DB),
+) {
+	t.Helper()
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "channels" {
+			guard(tx)
+		}
+	}))
+	t.Cleanup(func() {
+		db.Callback().Query().Remove(callbackName)
+	})
 }
 
 func TestPublicStatusProbeAdminRoutesRequireRootAndDisableCache(t *testing.T) {
@@ -274,6 +300,216 @@ func TestPublicStatusProbeAdminCRUDAndStrictValidation(t *testing.T) {
 	assert.Equal(t, "probe-a", deletePayload.Data.Targets[0].Key)
 }
 
+func TestPublicStatusProbeAdminChannelPreloadFailureHasNoConfigSideEffects(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupPublicStatusProbeAdminControllerTestDB(t)
+	preservePublicStatusProbeAdminRuntime(t)
+
+	rootToken := "public-status-probe-root-preload-failure-token"
+	seedPublicStatusProbeAdminUser(t, db, "root-preload-failure", common.RoleRootUser, rootToken)
+	channel := seedPublicStatusProbeAdminChannel(t, db, model.Channel{Id: 42, Name: "Preload Channel"})
+	initial := publicstatusprobesetting.DefaultDocument()
+	initial.Enabled = true
+	initial.Version = 40
+	initial.Targets = []publicstatusprobesetting.Target{{
+		Enabled:     true,
+		Key:         "probe-preload",
+		Group:       "preload",
+		DisplayName: "Preload Probe",
+		Model:       "gpt-5.5",
+		Protocol:    publicstatusprobesetting.ProtocolOpenAIChat,
+		ChannelID:   channel.Id,
+		KeyIndex:    0,
+	}}
+	publishPublicStatusProbeAdminConfig(t, db, initial)
+
+	const internalMarker = "private channel database failure marker"
+	registerPublicStatusProbeAdminChannelQueryGuard(t, db, "test:public-probe-preload-failure", func(tx *gorm.DB) {
+		tx.AddError(errors.New(internalMarker))
+	})
+	publishedVersions := make([]int64, 0)
+	previousHook := publicstatusprobesetting.SetPublishHook(func(version int64) {
+		publishedVersions = append(publishedVersions, version)
+	})
+	t.Cleanup(func() {
+		publicstatusprobesetting.SetPublishHook(previousHook)
+	})
+
+	beforeRaw := publicStatusProbeAdminOptionRaw(t, db)
+	beforeRuntime := publicstatusprobesetting.CurrentDocument()
+	engine := gin.New()
+	registerPublicStatusProbeAdminTestRoutes(engine)
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "get", method: http.MethodGet, path: "/api/public-status-probe/config"},
+		{name: "config update", method: http.MethodPut, path: "/api/public-status-probe/config", body: `{"version":40,"enabled":false,"ping_timeout_seconds":8,"chat_timeout_seconds":45,"degraded_latency_ms":6000,"concurrency":5,"retention_days":7}`},
+		{name: "target create", method: http.MethodPost, path: "/api/public-status-probe/targets", body: `{"version":40,"enabled":true,"group":"new","display_name":"New","model":"gpt-5.5","protocol":"openai_chat","channel_id":42,"key_index":0}`},
+		{name: "target update", method: http.MethodPut, path: "/api/public-status-probe/targets/probe-preload", body: `{"version":40,"enabled":true,"group":"updated","display_name":"Updated","model":"gpt-5.5","protocol":"openai_chat","channel_id":42,"key_index":0}`},
+		{name: "target delete", method: http.MethodDelete, path: "/api/public-status-probe/targets/probe-preload?version=40"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			response := performPublicStatusProbeAdminRequest(t, engine, testCase.method, testCase.path, testCase.body, rootToken)
+			assert.Equal(t, http.StatusInternalServerError, response.Code)
+			assert.NotContains(t, response.Body.String(), internalMarker)
+			assert.Equal(t, beforeRaw, publicStatusProbeAdminOptionRaw(t, db))
+			assert.Equal(t, beforeRuntime, publicstatusprobesetting.CurrentDocument())
+			assert.Empty(t, publishedVersions)
+		})
+	}
+}
+
+func TestPublicStatusProbeAdminMutationsNeverQueryChannelsAfterCAS(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupPublicStatusProbeAdminControllerTestDB(t)
+	preservePublicStatusProbeAdminRuntime(t)
+
+	rootToken := "public-status-probe-root-post-cas-token"
+	seedPublicStatusProbeAdminUser(t, db, "root-post-cas", common.RoleRootUser, rootToken)
+	seedPublicStatusProbeAdminChannel(t, db, model.Channel{Id: 42, Name: "Snapshot Channel"})
+	initial := publicstatusprobesetting.DefaultDocument()
+	initial.Enabled = true
+	initial.Version = 50
+	publishPublicStatusProbeAdminConfig(t, db, initial)
+
+	postCAS := false
+	postCASChannelQueries := 0
+	registerPublicStatusProbeAdminChannelQueryGuard(t, db, "test:public-probe-post-cas-query", func(tx *gorm.DB) {
+		if postCAS {
+			postCASChannelQueries++
+			tx.AddError(errors.New("post-CAS channel query must not run"))
+		}
+	})
+	publishedVersions := make([]int64, 0, 4)
+	previousHook := publicstatusprobesetting.SetPublishHook(func(version int64) {
+		publishedVersions = append(publishedVersions, version)
+		postCAS = true
+	})
+	t.Cleanup(func() {
+		publicstatusprobesetting.SetPublishHook(previousHook)
+	})
+
+	engine := gin.New()
+	registerPublicStatusProbeAdminTestRoutes(engine)
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		postCAS = false
+		response := performPublicStatusProbeAdminRequest(t, engine, method, path, body, rootToken)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		assert.Zero(t, postCASChannelQueries)
+		return response
+	}
+
+	request(http.MethodPut, "/api/public-status-probe/config", `{"version":50,"enabled":true,"ping_timeout_seconds":9,"chat_timeout_seconds":45,"degraded_latency_ms":6000,"concurrency":5,"retention_days":7}`)
+	createResponse := request(http.MethodPost, "/api/public-status-probe/targets", `{"version":51,"enabled":true,"group":"snapshot","display_name":"Snapshot","model":"gpt-5.5","protocol":"openai_chat","channel_id":42,"key_index":0}`)
+	var createPayload publicStatusProbeAdminResponse
+	require.NoError(t, common.Unmarshal(createResponse.Body.Bytes(), &createPayload))
+	require.Len(t, createPayload.Data.Targets, 1)
+	targetKey := createPayload.Data.Targets[0].Key
+	request(http.MethodPut, "/api/public-status-probe/targets/"+targetKey, `{"version":52,"enabled":false,"group":"snapshot-edited","display_name":"Snapshot Edited","model":"gpt-5.5","protocol":"openai_chat","channel_id":42,"key_index":0}`)
+	request(http.MethodDelete, "/api/public-status-probe/targets/"+targetKey+"?version=53", "")
+	assert.Equal(t, []int64{51, 52, 53, 54}, publishedVersions)
+}
+
+func TestPublicStatusProbeAdminReturnsStableSafeFieldErrors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupPublicStatusProbeAdminControllerTestDB(t)
+	preservePublicStatusProbeAdminRuntime(t)
+
+	rootToken := "public-status-probe-root-field-errors-token"
+	seedPublicStatusProbeAdminUser(t, db, "root-field-errors", common.RoleRootUser, rootToken)
+	seedPublicStatusProbeAdminChannel(t, db, model.Channel{Id: 42, Name: "Field Channel", Models: "gpt-5.5"})
+	initial := publicstatusprobesetting.DefaultDocument()
+	initial.Enabled = true
+	initial.Version = 60
+	publishPublicStatusProbeAdminConfig(t, db, initial)
+	engine := gin.New()
+	registerPublicStatusProbeAdminTestRoutes(engine)
+
+	invalidFields := performPublicStatusProbeAdminRequest(t, engine, http.MethodPost, "/api/public-status-probe/targets", `{"version":60,"enabled":true,"group":"","display_name":"`+strings.Repeat("x", 129)+`","model":"not-offered","protocol":"anthropic_messages","channel_id":42,"key_index":2}`, rootToken)
+	require.Equal(t, http.StatusBadRequest, invalidFields.Code)
+	var payload publicStatusProbeAdminValidationResponse
+	require.NoError(t, common.Unmarshal(invalidFields.Body.Bytes(), &payload))
+	assert.Equal(t, "invalid public status probe target", payload.Message)
+	assert.Equal(t, []publicStatusProbeAdminFieldError{
+		{Field: "group", Code: publicStatusProbeAdminFieldErrorInvalid},
+		{Field: "display_name", Code: publicStatusProbeAdminFieldErrorInvalid},
+		{Field: "model", Code: publicStatusProbeAdminFieldErrorInvalid},
+		{Field: "protocol", Code: publicStatusProbeAdminFieldErrorInvalid},
+		{Field: "key_index", Code: publicStatusProbeAdminFieldErrorInvalid},
+	}, payload.Data.FieldErrors)
+
+	missingChannel := performPublicStatusProbeAdminRequest(t, engine, http.MethodPost, "/api/public-status-probe/targets", `{"version":60,"enabled":true,"group":"safe","display_name":"Safe","model":"gpt-5.5","protocol":"openai_chat","channel_id":404,"key_index":0}`, rootToken)
+	require.Equal(t, http.StatusBadRequest, missingChannel.Code)
+	require.NoError(t, common.Unmarshal(missingChannel.Body.Bytes(), &payload))
+	assert.Equal(t, []publicStatusProbeAdminFieldError{{Field: "channel_id", Code: publicStatusProbeAdminFieldErrorInvalid}}, payload.Data.FieldErrors)
+
+	for _, version := range []string{"0", "-1"} {
+		invalidVersion := performPublicStatusProbeAdminRequest(t, engine, http.MethodPost, "/api/public-status-probe/targets", `{"version":`+version+`,"enabled":true,"group":"safe","display_name":"Safe","model":"gpt-5.5","protocol":"openai_chat","channel_id":42,"key_index":0}`, rootToken)
+		require.Equal(t, http.StatusBadRequest, invalidVersion.Code)
+		require.NoError(t, common.Unmarshal(invalidVersion.Body.Bytes(), &payload))
+		assert.Equal(t, []publicStatusProbeAdminFieldError{{Field: "version", Code: publicStatusProbeAdminFieldErrorInvalid}}, payload.Data.FieldErrors)
+		invalidUpdateVersion := performPublicStatusProbeAdminRequest(t, engine, http.MethodPut, "/api/public-status-probe/targets/missing", `{"version":`+version+`,"enabled":true,"group":"safe","display_name":"Safe","model":"gpt-5.5","protocol":"openai_chat","channel_id":42,"key_index":0}`, rootToken)
+		require.Equal(t, http.StatusBadRequest, invalidUpdateVersion.Code)
+		require.NoError(t, common.Unmarshal(invalidUpdateVersion.Body.Bytes(), &payload))
+		assert.Equal(t, []publicStatusProbeAdminFieldError{{Field: "version", Code: publicStatusProbeAdminFieldErrorInvalid}}, payload.Data.FieldErrors)
+	}
+
+	disabledKeyChannel := seedPublicStatusProbeAdminChannel(t, db, model.Channel{
+		Id:     43,
+		Name:   "Disabled Key Channel",
+		Models: "gpt-5.5",
+		Key:    "key-a\nkey-b",
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:         true,
+			MultiKeySize:       2,
+			MultiKeyStatusList: map[int]int{0: common.ChannelStatusEnabled, 1: common.ChannelStatusManuallyDisabled},
+		},
+	})
+	disabledKey := performPublicStatusProbeAdminRequest(t, engine, http.MethodPost, "/api/public-status-probe/targets", `{"version":60,"enabled":true,"group":"safe","display_name":"Safe","model":"gpt-5.5","protocol":"openai_chat","channel_id":`+strconv.Itoa(disabledKeyChannel.Id)+`,"key_index":1}`, rootToken)
+	require.Equal(t, http.StatusBadRequest, disabledKey.Code)
+	require.NoError(t, common.Unmarshal(disabledKey.Body.Bytes(), &payload))
+	assert.Equal(t, []publicStatusProbeAdminFieldError{{Field: "key_index", Code: publicStatusProbeAdminFieldErrorInvalid}}, payload.Data.FieldErrors)
+}
+
+func TestPublicStatusProbeAdminKeepsComplexChannelValidationFormLevelAndPrivate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupPublicStatusProbeAdminControllerTestDB(t)
+	preservePublicStatusProbeAdminRuntime(t)
+
+	rootToken := "public-status-probe-root-private-validation-token"
+	seedPublicStatusProbeAdminUser(t, db, "root-private-validation", common.RoleRootUser, rootToken)
+	privateOverride := `{"private_header":"private-override-marker"}`
+	privateBaseURL := "https://private-base-url.invalid"
+	seedPublicStatusProbeAdminChannel(t, db, model.Channel{
+		Id:            42,
+		Name:          "Private Validation Channel",
+		Key:           "private-api-key-marker",
+		Models:        "gpt-5.5",
+		BaseURL:       &privateBaseURL,
+		ParamOverride: &privateOverride,
+	})
+	initial := publicstatusprobesetting.DefaultDocument()
+	initial.Enabled = true
+	initial.Version = 70
+	publishPublicStatusProbeAdminConfig(t, db, initial)
+	engine := gin.New()
+	registerPublicStatusProbeAdminTestRoutes(engine)
+
+	response := performPublicStatusProbeAdminRequest(t, engine, http.MethodPost, "/api/public-status-probe/targets", `{"version":70,"enabled":true,"group":"private","display_name":"Private","model":"gpt-5.5","protocol":"openai_chat","channel_id":42,"key_index":0}`, rootToken)
+	require.Equal(t, http.StatusBadRequest, response.Code)
+	var payload publicStatusProbeAdminValidationResponse
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &payload))
+	assert.Empty(t, payload.Data.FieldErrors)
+	for _, forbidden := range []string{"private-override-marker", "private-base-url.invalid", "private-api-key-marker", "param_override", "base_url"} {
+		assert.NotContains(t, response.Body.String(), forbidden)
+	}
+}
+
 func TestPublicStatusProbeAdminRejectsMissingTargetAndStaleConfigVersion(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupPublicStatusProbeAdminControllerTestDB(t)
@@ -391,7 +627,7 @@ func TestPublicStatusProbeAdminReturnsAndDeletesOrphanTarget(t *testing.T) {
 	assert.Empty(t, deletePayload.Data.Targets)
 }
 
-func TestPublicStatusProbeAdminCanDisableOrphanTarget(t *testing.T) {
+func TestPublicStatusProbeAdminCanEditAndDeleteDisabledOrphanTarget(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupPublicStatusProbeAdminControllerTestDB(t)
 	preservePublicStatusProbeAdminRuntime(t)
@@ -403,7 +639,7 @@ func TestPublicStatusProbeAdminCanDisableOrphanTarget(t *testing.T) {
 	initial.Version = 31
 	initial.Targets = []publicstatusprobesetting.Target{
 		{
-			Enabled:     true,
+			Enabled:     false,
 			Key:         "probe-disable-orphan",
 			Group:       "group-orphan",
 			DisplayName: "Orphan Probe",
@@ -417,7 +653,7 @@ func TestPublicStatusProbeAdminCanDisableOrphanTarget(t *testing.T) {
 
 	engine := gin.New()
 	registerPublicStatusProbeAdminTestRoutes(engine)
-	response := performPublicStatusProbeAdminRequest(t, engine, http.MethodPut, "/api/public-status-probe/targets/probe-disable-orphan", `{"version":31,"enabled":false,"group":"group-orphan","display_name":"Orphan Probe","model":"gpt-5.5","protocol":"openai_chat","channel_id":909,"key_index":0}`, rootToken)
+	response := performPublicStatusProbeAdminRequest(t, engine, http.MethodPut, "/api/public-status-probe/targets/probe-disable-orphan", `{"version":31,"enabled":false,"group":"group-orphan-edited","display_name":"Orphan Probe Edited","model":"gpt-5.5","protocol":"openai_chat","channel_id":909,"key_index":0}`, rootToken)
 
 	require.Equal(t, http.StatusOK, response.Code)
 	var payload publicStatusProbeAdminResponse
@@ -425,6 +661,15 @@ func TestPublicStatusProbeAdminCanDisableOrphanTarget(t *testing.T) {
 	assert.Equal(t, int64(32), payload.Data.Version)
 	require.Len(t, payload.Data.Targets, 1)
 	assert.False(t, payload.Data.Targets[0].Enabled)
+	assert.Equal(t, "group-orphan-edited", payload.Data.Targets[0].Group)
+	assert.Equal(t, "Orphan Probe Edited", payload.Data.Targets[0].DisplayName)
+
+	deleteResponse := performPublicStatusProbeAdminRequest(t, engine, http.MethodDelete, "/api/public-status-probe/targets/probe-disable-orphan?version=32", "", rootToken)
+	require.Equal(t, http.StatusOK, deleteResponse.Code)
+	var deletePayload publicStatusProbeAdminResponse
+	require.NoError(t, common.Unmarshal(deleteResponse.Body.Bytes(), &deletePayload))
+	assert.Equal(t, int64(33), deletePayload.Data.Version)
+	assert.Empty(t, deletePayload.Data.Targets)
 }
 
 func ptrString(value string) *string {

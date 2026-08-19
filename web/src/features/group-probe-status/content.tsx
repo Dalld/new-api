@@ -176,6 +176,21 @@ function formatGeneratedAt(timestamp: number) {
   }).format(new Date(timestamp * 1000))
 }
 
+function groupTargetsByFirstAppearance(targets: PublicProbeTarget[]) {
+  const groupedTargets = new Map<string, PublicProbeTarget[]>()
+
+  for (const target of targets) {
+    const group = groupedTargets.get(target.group)
+    if (group) {
+      group.push(target)
+    } else {
+      groupedTargets.set(target.group, [target])
+    }
+  }
+
+  return groupedTargets
+}
+
 export type GroupProbeStatusContentProps = {
   data?: PublicProbeData
   isPending: boolean
@@ -193,6 +208,7 @@ export function GroupProbeStatusContent({
 }: GroupProbeStatusContentProps) {
   const { t } = useTranslation()
   const targets = data?.targets ?? []
+  const groupedTargets = groupTargetsByFirstAppearance(targets)
   const aggregateState = getAggregateState(data)
   const aggregate = aggregatePresentation[aggregateState]
   const AggregateIcon = aggregate.icon
@@ -211,17 +227,37 @@ export function GroupProbeStatusContent({
     statusContent = (
       <section
         aria-label={t('Public probe status')}
-        className='grid grid-cols-1 items-stretch gap-4 md:grid-cols-2 xl:grid-cols-3'
+        className='space-y-8'
         data-layout='stable'
-        data-testid='status-target-grid'
+        data-testid='status-target-groups'
       >
-        {targets.map((target) => (
-          <GroupStatusRow
-            key={target.key}
-            generatedAt={data.generated_at}
-            intervalSeconds={data.interval_seconds}
-            target={target}
-          />
+        {[...groupedTargets].map(([group, groupTargets]) => (
+          <section
+            key={group}
+            aria-label={group}
+            className='min-w-0 space-y-4'
+            data-testid='status-target-group'
+          >
+            <h2
+              className='text-foreground text-lg font-semibold break-words sm:text-xl'
+              data-testid='status-group-heading'
+            >
+              {group}
+            </h2>
+            <div
+              className='grid grid-cols-1 items-stretch gap-4 md:grid-cols-2 xl:grid-cols-3'
+              data-testid='status-target-grid'
+            >
+              {groupTargets.map((target) => (
+                <GroupStatusRow
+                  key={target.key}
+                  generatedAt={data.generated_at}
+                  intervalSeconds={data.interval_seconds}
+                  target={target}
+                />
+              ))}
+            </div>
+          </section>
         ))}
       </section>
     )
@@ -289,7 +325,7 @@ export function GroupProbeStatusContent({
   }
 
   return (
-    <main className='mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-10'>
+    <div className='mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-10'>
       <header className='border-border flex flex-col gap-5 border-b pb-6 sm:flex-row sm:items-end sm:justify-between'>
         <div className='min-w-0 space-y-3'>
           <div className='text-primary flex items-center gap-2 text-sm font-medium'>
@@ -343,6 +379,6 @@ export function GroupProbeStatusContent({
       </div>
 
       {statusContent}
-    </main>
+    </div>
   )
 }

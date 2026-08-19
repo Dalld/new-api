@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	probeservice "github.com/QuantumNous/new-api/service/public_status_probe"
 	publicstatusprobesetting "github.com/QuantumNous/new-api/setting/public_status_probe_setting"
@@ -21,10 +22,15 @@ import (
 
 const publicStatusProbeAdminMaxRequestBytes = 64 * 1024
 const publicStatusProbeAdminMaxTargetKeyRunes = 96
+const publicStatusProbeAdminMaxTargetGroupRunes = 64
+const publicStatusProbeAdminMaxTargetDisplayNameRunes = 128
+const publicStatusProbeAdminMaxTargetModelRunes = 128
+const publicStatusProbeAdminFieldErrorInvalid = "invalid"
 
 var (
 	errPublicStatusProbeAdminBadRequest = errors.New("invalid public status probe request")
 	errPublicStatusProbeTargetMissing   = errors.New("public status probe target not found")
+	errPublicStatusProbeChannelLoad     = errors.New("failed to load public status probe channels")
 )
 
 type publicStatusProbeAdminConfigUpdateRequest struct {
@@ -97,12 +103,41 @@ type publicStatusProbeAdminConflictResponse struct {
 	} `json:"data"`
 }
 
+type publicStatusProbeAdminFieldError struct {
+	Field string `json:"field"`
+	Code  string `json:"code"`
+}
+
+type publicStatusProbeAdminValidationError struct {
+	Message     string
+	FieldErrors []publicStatusProbeAdminFieldError
+}
+
+func (e *publicStatusProbeAdminValidationError) Error() string {
+	return e.Message
+}
+
+type publicStatusProbeAdminValidationResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Data    struct {
+		FieldErrors []publicStatusProbeAdminFieldError `json:"field_errors"`
+	} `json:"data"`
+}
+
+type publicStatusProbeAdminChannelSnapshot struct {
+	Channels        []publicStatusProbeAdminChannelDTO
+	ChannelByID     map[int]publicStatusProbeAdminChannelDTO
+	ChannelInfoByID map[int]model.ChannelInfo
+}
+
 func GetPublicStatusProbeConfig(c *gin.Context) {
-	response, err := buildPublicStatusProbeAdminResponse(publicstatusprobesetting.CurrentDocument())
+	channels, err := loadPublicStatusProbeAdminChannelSnapshot(nil, nil)
 	if err != nil {
 		writePublicStatusProbeAdminError(c, http.StatusInternalServerError, "failed to load public status probe config")
 		return
 	}
+	response := buildPublicStatusProbeAdminResponse(publicstatusprobesetting.CurrentDocument(), channels)
 	common.ApiSuccess(c, response.Data)
 }
 
@@ -113,8 +148,18 @@ func UpdatePublicStatusProbeConfig(c *gin.Context) {
 		writePublicStatusProbeAdminError(c, http.StatusBadRequest, "invalid public status probe configuration")
 		return
 	}
-
-	updated, err := model.CompareAndSwapPublicStatusProbeConfig(request.Version, func(next *publicstatusprobesetting.Document) error {
+	if err := validatePublicStatusProbeAdminConfigRequest(request); err != nil {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.config_update", "", request.Version)
+		writePublicStatusProbeAdminMutationError(c, err)
+		return
+	}
+	var channels publicStatusProbeAdminChannelSnapshot
+	updated, err := model.CompareAndSwapPublicStatusProbeConfigWithTransaction(request.Version, func(tx *gorm.DB, next *publicstatusprobesetting.Document) error {
+		var loadErr error
+		channels, loadErr = loadPublicStatusProbeAdminChannelSnapshot(tx, nil)
+		if loadErr != nil {
+			return errPublicStatusProbeChannelLoad
+		}
 		next.Enabled = request.Enabled
 		next.PingTimeoutSeconds = request.PingTimeoutSeconds
 		next.ChatTimeoutSeconds = request.ChatTimeoutSeconds
@@ -138,11 +183,7 @@ func UpdatePublicStatusProbeConfig(c *gin.Context) {
 	recordManageAudit(c, "public_status_probe.config_update", map[string]interface{}{
 		"version": updated.Version,
 	})
-	response, err := buildPublicStatusProbeAdminResponse(updated)
-	if err != nil {
-		writePublicStatusProbeAdminError(c, http.StatusInternalServerError, "failed to load public status probe config")
-		return
-	}
+	response := buildPublicStatusProbeAdminResponse(updated, channels)
 	common.ApiSuccess(c, response.Data)
 }
 
@@ -164,10 +205,24 @@ func CreatePublicStatusProbeTarget(c *gin.Context) {
 		ChannelID:   request.ChannelID,
 		KeyIndex:    request.KeyIndex,
 	}
-
-	updated, err := model.CompareAndSwapPublicStatusProbeConfig(request.Version, func(next *publicstatusprobesetting.Document) error {
-		if err := validatePublicStatusProbeTarget(c, target); err != nil {
-			return err
+	if request.Version <= 0 {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.target_create", "", request.Version)
+		writePublicStatusProbeAdminValidationError(c, &publicStatusProbeAdminValidationError{
+			"invalid public status probe target",
+			[]publicStatusProbeAdminFieldError{{Field: "version", Code: publicStatusProbeAdminFieldErrorInvalid}},
+		})
+		return
+	}
+	var channels publicStatusProbeAdminChannelSnapshot
+	updated, err := model.CompareAndSwapPublicStatusProbeConfigWithTransaction(request.Version, func(tx *gorm.DB, next *publicstatusprobesetting.Document) error {
+		var loadErr error
+		channels, loadErr = loadPublicStatusProbeAdminChannelSnapshot(tx, []int{target.ChannelID})
+		if loadErr != nil {
+			return errPublicStatusProbeChannelLoad
+		}
+		validationErr := validatePublicStatusProbeTarget(c, tx, target, channels, true)
+		if validationErr != nil {
+			return validationErr
 		}
 		candidate := *next
 		candidate.Version = request.Version
@@ -189,11 +244,7 @@ func CreatePublicStatusProbeTarget(c *gin.Context) {
 		"target_key": target.Key,
 		"version":    updated.Version,
 	})
-	response, err := buildPublicStatusProbeAdminResponse(updated)
-	if err != nil {
-		writePublicStatusProbeAdminError(c, http.StatusInternalServerError, "failed to load public status probe config")
-		return
-	}
+	response := buildPublicStatusProbeAdminResponse(updated, channels)
 	common.ApiSuccess(c, response.Data)
 }
 
@@ -222,16 +273,32 @@ func UpdatePublicStatusProbeTarget(c *gin.Context) {
 		ChannelID:   request.ChannelID,
 		KeyIndex:    request.KeyIndex,
 	}
-
-	updated, err := model.CompareAndSwapPublicStatusProbeConfig(request.Version, func(next *publicstatusprobesetting.Document) error {
+	if request.Version <= 0 {
+		recordPublicStatusProbeAdminRejectedAudit(c, "public_status_probe.target_update", pathKey, request.Version)
+		writePublicStatusProbeAdminValidationError(c, &publicStatusProbeAdminValidationError{
+			"invalid public status probe target",
+			[]publicStatusProbeAdminFieldError{{Field: "version", Code: publicStatusProbeAdminFieldErrorInvalid}},
+		})
+		return
+	}
+	var channels publicStatusProbeAdminChannelSnapshot
+	updated, err := model.CompareAndSwapPublicStatusProbeConfigWithTransaction(request.Version, func(tx *gorm.DB, next *publicstatusprobesetting.Document) error {
 		index := findPublicStatusProbeTargetIndex(next.Targets, pathKey)
 		if index < 0 {
 			return errPublicStatusProbeTargetMissing
 		}
+		var loadErr error
+		lockIDs := []int(nil)
 		if target.Enabled {
-			if err := validatePublicStatusProbeTarget(c, target); err != nil {
-				return err
-			}
+			lockIDs = []int{target.ChannelID}
+		}
+		channels, loadErr = loadPublicStatusProbeAdminChannelSnapshot(tx, lockIDs)
+		if loadErr != nil {
+			return errPublicStatusProbeChannelLoad
+		}
+		validationErr := validatePublicStatusProbeTarget(c, tx, target, channels, target.Enabled)
+		if validationErr != nil {
+			return validationErr
 		}
 		candidate := *next
 		candidate.Version = request.Version
@@ -255,11 +322,7 @@ func UpdatePublicStatusProbeTarget(c *gin.Context) {
 		"target_key": pathKey,
 		"version":    updated.Version,
 	})
-	response, err := buildPublicStatusProbeAdminResponse(updated)
-	if err != nil {
-		writePublicStatusProbeAdminError(c, http.StatusInternalServerError, "failed to load public status probe config")
-		return
-	}
+	response := buildPublicStatusProbeAdminResponse(updated, channels)
 	common.ApiSuccess(c, response.Data)
 }
 
@@ -278,11 +341,17 @@ func DeletePublicStatusProbeTarget(c *gin.Context) {
 		writePublicStatusProbeAdminError(c, http.StatusBadRequest, "invalid public status probe version")
 		return
 	}
-
-	updated, err := model.CompareAndSwapPublicStatusProbeConfig(version, func(next *publicstatusprobesetting.Document) error {
+	var channels publicStatusProbeAdminChannelSnapshot
+	updated, err := model.CompareAndSwapPublicStatusProbeConfigWithTransaction(version, func(tx *gorm.DB, next *publicstatusprobesetting.Document) error {
 		index := findPublicStatusProbeTargetIndex(next.Targets, pathKey)
 		if index < 0 {
 			return errPublicStatusProbeTargetMissing
+		}
+		lockIDs := []int{next.Targets[index].ChannelID}
+		var loadErr error
+		channels, loadErr = loadPublicStatusProbeAdminChannelSnapshot(tx, lockIDs)
+		if loadErr != nil {
+			return errPublicStatusProbeChannelLoad
 		}
 		candidate := *next
 		candidate.Version = version
@@ -305,11 +374,7 @@ func DeletePublicStatusProbeTarget(c *gin.Context) {
 		"target_key": pathKey,
 		"version":    updated.Version,
 	})
-	response, err := buildPublicStatusProbeAdminResponse(updated)
-	if err != nil {
-		writePublicStatusProbeAdminError(c, http.StatusInternalServerError, "failed to load public status probe config")
-		return
-	}
+	response := buildPublicStatusProbeAdminResponse(updated, channels)
 	common.ApiSuccess(c, response.Data)
 }
 
@@ -336,30 +401,28 @@ func decodePublicStatusProbeAdminRequest(c *gin.Context, out any) error {
 	return nil
 }
 
-func validatePublicStatusProbeTarget(c *gin.Context, target publicstatusprobesetting.Target) error {
-	loader := probeservice.NewDBTargetLoader(model.DB)
-	if err := loader.ValidateTarget(c.Request.Context(), target); err != nil {
-		return err
-	}
-	return nil
-}
-
-func buildPublicStatusProbeAdminResponse(document publicstatusprobesetting.Document) (publicStatusProbeAdminResponse, error) {
-	var channels []model.Channel
-	if err := model.DB.
-		Select("id", "name", "type", "status", "models", "key", "channel_info").
-		Order("id ASC").
-		Find(&channels).Error; err != nil {
-		return publicStatusProbeAdminResponse{}, err
+func loadPublicStatusProbeAdminChannelSnapshot(db *gorm.DB, lockChannelIDs []int) (publicStatusProbeAdminChannelSnapshot, error) {
+	channels, err := model.LoadPublicStatusProbeChannels(db, lockChannelIDs)
+	if err != nil {
+		return publicStatusProbeAdminChannelSnapshot{}, errPublicStatusProbeChannelLoad
 	}
 	channelByID := make(map[int]publicStatusProbeAdminChannelDTO, len(channels))
+	channelInfoByID := make(map[int]model.ChannelInfo, len(channels))
 	channelDTOs := make([]publicStatusProbeAdminChannelDTO, 0, len(channels))
 	for _, channel := range channels {
 		channelDTO := buildPublicStatusProbeAdminChannelDTO(channel)
 		channelDTOs = append(channelDTOs, channelDTO)
 		channelByID[channel.Id] = channelDTO
+		channelInfoByID[channel.Id] = channel.ChannelInfo
 	}
+	return publicStatusProbeAdminChannelSnapshot{
+		Channels:        channelDTOs,
+		ChannelByID:     channelByID,
+		ChannelInfoByID: channelInfoByID,
+	}, nil
+}
 
+func buildPublicStatusProbeAdminResponse(document publicstatusprobesetting.Document, snapshot publicStatusProbeAdminChannelSnapshot) publicStatusProbeAdminResponse {
 	response := publicStatusProbeAdminResponse{
 		Success: true,
 		Data: publicStatusProbeAdminConfigDTO{
@@ -371,12 +434,12 @@ func buildPublicStatusProbeAdminResponse(document publicstatusprobesetting.Docum
 			Concurrency:        document.Concurrency,
 			RetentionDays:      document.RetentionDays,
 			Targets:            make([]publicStatusProbeAdminTargetDTO, 0, len(document.Targets)),
-			Channels:           channelDTOs,
+			Channels:           snapshot.Channels,
 		},
 	}
 
 	for _, target := range document.Targets {
-		channelDTO, exists := channelByID[target.ChannelID]
+		channelDTO, exists := snapshot.ChannelByID[target.ChannelID]
 		if !exists {
 			channelDTO = publicStatusProbeAdminChannelDTO{
 				ID:     target.ChannelID,
@@ -396,7 +459,160 @@ func buildPublicStatusProbeAdminResponse(document publicstatusprobesetting.Docum
 		})
 	}
 
-	return response, nil
+	return response
+}
+
+func validatePublicStatusProbeAdminConfigRequest(request publicStatusProbeAdminConfigUpdateRequest) error {
+	fieldErrors := make([]publicStatusProbeAdminFieldError, 0, 6)
+	if request.Version <= 0 {
+		fieldErrors = appendPublicStatusProbeAdminFieldError(fieldErrors, "version")
+	}
+	if request.PingTimeoutSeconds < 1 || request.PingTimeoutSeconds > 15 {
+		fieldErrors = appendPublicStatusProbeAdminFieldError(fieldErrors, "ping_timeout_seconds")
+	}
+	if request.ChatTimeoutSeconds < 5 || request.ChatTimeoutSeconds > 60 {
+		fieldErrors = appendPublicStatusProbeAdminFieldError(fieldErrors, "chat_timeout_seconds")
+	}
+	if request.DegradedLatencyMS < 1 || request.DegradedLatencyMS > 60_000 {
+		fieldErrors = appendPublicStatusProbeAdminFieldError(fieldErrors, "degraded_latency_ms")
+	}
+	if request.Concurrency < 1 || request.Concurrency > 20 {
+		fieldErrors = appendPublicStatusProbeAdminFieldError(fieldErrors, "concurrency")
+	}
+	if request.RetentionDays < 1 || request.RetentionDays > 30 {
+		fieldErrors = appendPublicStatusProbeAdminFieldError(fieldErrors, "retention_days")
+	}
+	return newPublicStatusProbeAdminValidationError("invalid public status probe configuration", fieldErrors)
+}
+
+func validatePublicStatusProbeTarget(
+	c *gin.Context,
+	db *gorm.DB,
+	target publicstatusprobesetting.Target,
+	snapshot publicStatusProbeAdminChannelSnapshot,
+	requireAvailableChannel bool,
+) error {
+	invalidGroup := !validPublicStatusProbeAdminTargetString(target.Group, publicStatusProbeAdminMaxTargetGroupRunes)
+	invalidDisplayName := !validPublicStatusProbeAdminTargetString(target.DisplayName, publicStatusProbeAdminMaxTargetDisplayNameRunes)
+	invalidModel := !validPublicStatusProbeAdminTargetString(target.Model, publicStatusProbeAdminMaxTargetModelRunes)
+	invalidProtocol := !validPublicStatusProbeAdminProtocol(target.Protocol)
+	invalidChannelID := target.ChannelID <= 0
+	invalidKeyIndex := target.KeyIndex < 0
+
+	channel, channelExists := snapshot.ChannelByID[target.ChannelID]
+	if requireAvailableChannel && target.ChannelID > 0 {
+		if !channelExists || channel.Status != common.ChannelStatusEnabled {
+			invalidChannelID = true
+		} else {
+			if validPublicStatusProbeAdminProtocol(target.Protocol) && !publicStatusProbeAdminProtocolMatchesChannel(target.Protocol, channel.Type) {
+				invalidProtocol = true
+			}
+			if validPublicStatusProbeAdminTargetString(target.Model, publicStatusProbeAdminMaxTargetModelRunes) && !publicStatusProbeAdminChannelOffersModel(channel.Models, target.Model) {
+				invalidModel = true
+			}
+			if target.KeyIndex >= 0 && ((!channel.IsMultiKey && target.KeyIndex != 0) || (channel.IsMultiKey && target.KeyIndex >= channel.KeyCount)) {
+				invalidKeyIndex = true
+			}
+			if keyStatus, exists := snapshot.ChannelInfoByID[target.ChannelID].MultiKeyStatusList[target.KeyIndex]; exists && keyStatus != common.ChannelStatusEnabled {
+				invalidKeyIndex = true
+			}
+		}
+	}
+
+	fieldErrors := make([]publicStatusProbeAdminFieldError, 0, 6)
+	for _, invalidField := range []struct {
+		invalid bool
+		field   string
+	}{
+		{invalid: invalidGroup, field: "group"},
+		{invalid: invalidDisplayName, field: "display_name"},
+		{invalid: invalidModel, field: "model"},
+		{invalid: invalidProtocol, field: "protocol"},
+		{invalid: invalidChannelID, field: "channel_id"},
+		{invalid: invalidKeyIndex, field: "key_index"},
+	} {
+		if invalidField.invalid {
+			fieldErrors = appendPublicStatusProbeAdminFieldError(fieldErrors, invalidField.field)
+		}
+	}
+	if validationErr := newPublicStatusProbeAdminValidationError("invalid public status probe target", fieldErrors); validationErr != nil {
+		return validationErr
+	}
+	if !requireAvailableChannel {
+		return nil
+	}
+
+	loader := probeservice.NewDBTargetLoader(db)
+	if err := loader.ValidateTarget(c.Request.Context(), target); err != nil {
+		if probeservice.ErrorCodeOf(err) == probeservice.ErrorNetwork {
+			return errPublicStatusProbeChannelLoad
+		}
+		return &publicStatusProbeAdminValidationError{
+			Message:     "invalid public status probe target",
+			FieldErrors: make([]publicStatusProbeAdminFieldError, 0),
+		}
+	}
+	return nil
+}
+
+func validPublicStatusProbeAdminTargetString(value string, maximumRunes int) bool {
+	return value != "" && utf8.ValidString(value) && utf8.RuneCountInString(value) <= maximumRunes
+}
+
+func validPublicStatusProbeAdminProtocol(protocol publicstatusprobesetting.Protocol) bool {
+	switch protocol {
+	case publicstatusprobesetting.ProtocolOpenAIChat,
+		publicstatusprobesetting.ProtocolOpenAIResponses,
+		publicstatusprobesetting.ProtocolAnthropicMessages,
+		publicstatusprobesetting.ProtocolGeminiGenerateContent:
+		return true
+	default:
+		return false
+	}
+}
+
+func publicStatusProbeAdminProtocolMatchesChannel(protocol publicstatusprobesetting.Protocol, channelType int) bool {
+	switch protocol {
+	case publicstatusprobesetting.ProtocolOpenAIChat, publicstatusprobesetting.ProtocolOpenAIResponses:
+		return channelType == constant.ChannelTypeOpenAI
+	case publicstatusprobesetting.ProtocolAnthropicMessages:
+		return channelType == constant.ChannelTypeAnthropic
+	case publicstatusprobesetting.ProtocolGeminiGenerateContent:
+		return channelType == constant.ChannelTypeGemini
+	default:
+		return false
+	}
+}
+
+func publicStatusProbeAdminChannelOffersModel(models string, targetModel string) bool {
+	for _, modelName := range strings.Split(models, ",") {
+		if strings.TrimSpace(modelName) == targetModel {
+			return true
+		}
+	}
+	return false
+}
+
+func appendPublicStatusProbeAdminFieldError(fieldErrors []publicStatusProbeAdminFieldError, field string) []publicStatusProbeAdminFieldError {
+	for _, fieldError := range fieldErrors {
+		if fieldError.Field == field {
+			return fieldErrors
+		}
+	}
+	return append(fieldErrors, publicStatusProbeAdminFieldError{
+		Field: field,
+		Code:  publicStatusProbeAdminFieldErrorInvalid,
+	})
+}
+
+func newPublicStatusProbeAdminValidationError(message string, fieldErrors []publicStatusProbeAdminFieldError) error {
+	if len(fieldErrors) == 0 {
+		return nil
+	}
+	return &publicStatusProbeAdminValidationError{
+		Message:     message,
+		FieldErrors: fieldErrors,
+	}
 }
 
 func buildPublicStatusProbeAdminChannelDTO(channel model.Channel) publicStatusProbeAdminChannelDTO {
@@ -419,25 +635,38 @@ func writePublicStatusProbeAdminMutationError(c *gin.Context, err error) {
 	if err == nil {
 		return
 	}
+	var validationErr *publicStatusProbeAdminValidationError
 	switch {
 	case errors.Is(err, errPublicStatusProbeTargetMissing), errors.Is(err, gorm.ErrRecordNotFound):
 		writePublicStatusProbeAdminError(c, http.StatusNotFound, "public status probe target not found")
 	case errors.Is(err, model.ErrPublicStatusProbeConfigConflict):
 		writePublicStatusProbeAdminConflict(c)
+	case errors.As(err, &validationErr):
+		writePublicStatusProbeAdminValidationError(c, validationErr)
+	case errors.Is(err, errPublicStatusProbeChannelLoad):
+		writePublicStatusProbeAdminError(c, http.StatusInternalServerError, "failed to load public status probe config")
 	default:
 		switch probeservice.ErrorCodeOf(err) {
 		case probeservice.ErrorInvalidTarget, probeservice.ErrorUnsupportedProvider, probeservice.ErrorValidationFailed, probeservice.ErrorResponseTooLarge:
-			writePublicStatusProbeAdminError(c, http.StatusBadRequest, "invalid public status probe target")
+			writePublicStatusProbeAdminValidationError(c, &publicStatusProbeAdminValidationError{
+				Message:     "invalid public status probe target",
+				FieldErrors: make([]publicStatusProbeAdminFieldError, 0),
+			})
 		case probeservice.ErrorNetwork, probeservice.ErrorTimeout, probeservice.ErrorEmptyResponse, probeservice.ErrorProviderRejected:
-			writePublicStatusProbeAdminError(c, http.StatusBadRequest, "invalid public status probe target")
+			writePublicStatusProbeAdminError(c, http.StatusInternalServerError, "failed to update public status probe config")
 		default:
-			if strings.Contains(strings.ToLower(err.Error()), "record not found") {
-				writePublicStatusProbeAdminError(c, http.StatusNotFound, "public status probe target not found")
-				return
-			}
-			writePublicStatusProbeAdminError(c, http.StatusBadRequest, "invalid public status probe request")
+			writePublicStatusProbeAdminError(c, http.StatusInternalServerError, "failed to update public status probe config")
 		}
 	}
+}
+
+func writePublicStatusProbeAdminValidationError(c *gin.Context, err *publicStatusProbeAdminValidationError) {
+	response := publicStatusProbeAdminValidationResponse{
+		Success: false,
+		Message: err.Message,
+	}
+	response.Data.FieldErrors = err.FieldErrors
+	c.AbortWithStatusJSON(http.StatusBadRequest, response)
 }
 
 func writePublicStatusProbeAdminConflict(c *gin.Context) {

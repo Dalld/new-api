@@ -182,6 +182,12 @@ export function TargetsSection({
                         {!target.enabled ? (
                           <Badge variant='secondary'>{t('Disabled')}</Badge>
                         ) : null}
+                        <Badge
+                          variant='outline'
+                          className='shrink-0 font-mono text-[11px]'
+                        >
+                          {t('Key index')}: {target.key_index}
+                        </Badge>
                         {!channels.some(
                           (channel) =>
                             channel.id === target.channel_id &&

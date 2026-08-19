@@ -116,52 +116,113 @@ func CompareAndSwapPublicStatusProbeConfig(
 	expectedVersion int64,
 	mutate func(*publicstatusprobesetting.Document) error,
 ) (publicstatusprobesetting.Document, error) {
-	db := publicStatusProbeDB(DB)
-	var option Option
-	if err := takePublicStatusProbeOption(db, &option).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return publicstatusprobesetting.Document{}, ErrPublicStatusProbeConfigConflict
-		}
-		return publicstatusprobesetting.Document{}, err
+	if mutate == nil {
+		return publicstatusprobesetting.Document{}, errors.New("public status probe mutation is required")
 	}
+	return compareAndSwapPublicStatusProbeConfig(expectedVersion, func(_ *gorm.DB, next *publicstatusprobesetting.Document) error {
+		return mutate(next)
+	}, false)
+}
 
-	current, err := publicstatusprobesetting.DecodeDocument(option.Value)
-	if err != nil {
-		return publicstatusprobesetting.Document{}, err
-	}
-	if current.Version != expectedVersion {
-		return publicstatusprobesetting.Document{}, ErrPublicStatusProbeConfigConflict
-	}
+// CompareAndSwapPublicStatusProbeConfigWithTransaction lets callers validate
+// related rows while the configuration CAS transaction is still open.
+func CompareAndSwapPublicStatusProbeConfigWithTransaction(
+	expectedVersion int64,
+	mutate func(*gorm.DB, *publicstatusprobesetting.Document) error,
+) (publicstatusprobesetting.Document, error) {
+	return compareAndSwapPublicStatusProbeConfig(expectedVersion, mutate, true)
+}
+
+func compareAndSwapPublicStatusProbeConfig(
+	expectedVersion int64,
+	mutate func(*gorm.DB, *publicstatusprobesetting.Document) error,
+	transactional bool,
+) (publicstatusprobesetting.Document, error) {
 	if mutate == nil {
 		return publicstatusprobesetting.Document{}, errors.New("public status probe mutation is required")
 	}
 
-	next := current
-	next.Targets = append([]publicstatusprobesetting.Target(nil), current.Targets...)
-	if err := mutate(&next); err != nil {
-		return publicstatusprobesetting.Document{}, err
-	}
-	next.Version = current.Version + 1
-	nextRaw, err := publicstatusprobesetting.EncodeDocument(next)
-	if err != nil {
-		return publicstatusprobesetting.Document{}, err
-	}
-	next, err = publicstatusprobesetting.DecodeDocument(nextRaw)
-	if err != nil {
-		return publicstatusprobesetting.Document{}, err
-	}
+	var next publicstatusprobesetting.Document
+	var nextRaw string
+	apply := func(tx *gorm.DB) error {
+		tx = publicStatusProbeDB(tx)
+		var option Option
+		if err := takePublicStatusProbeOption(tx, &option).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrPublicStatusProbeConfigConflict
+			}
+			return err
+		}
 
-	result := updatePublicStatusProbeConfig(db, option.Value, nextRaw)
-	if result.Error != nil {
-		return publicstatusprobesetting.Document{}, result.Error
+		current, err := publicstatusprobesetting.DecodeDocument(option.Value)
+		if err != nil {
+			return err
+		}
+		if current.Version != expectedVersion {
+			return ErrPublicStatusProbeConfigConflict
+		}
+
+		next = current
+		next.Targets = append([]publicstatusprobesetting.Target(nil), current.Targets...)
+		if err := mutate(tx, &next); err != nil {
+			return err
+		}
+		next.Version = current.Version + 1
+		nextRaw, err = publicstatusprobesetting.EncodeDocument(next)
+		if err != nil {
+			return err
+		}
+		next, err = publicstatusprobesetting.DecodeDocument(nextRaw)
+		if err != nil {
+			return err
+		}
+
+		result := updatePublicStatusProbeConfig(tx, option.Value, nextRaw)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrPublicStatusProbeConfigConflict
+		}
+		return nil
 	}
-	if result.RowsAffected != 1 {
-		return publicstatusprobesetting.Document{}, ErrPublicStatusProbeConfigConflict
+	var err error
+	if transactional {
+		err = DB.Transaction(apply)
+	} else {
+		err = apply(publicStatusProbeDB(DB))
+	}
+	if err != nil {
+		return publicstatusprobesetting.Document{}, err
 	}
 	if _, err := publishPublicStatusProbeConfig(nextRaw); err != nil {
 		return publicstatusprobesetting.Document{}, err
 	}
 	return next, nil
+}
+
+// LoadPublicStatusProbeChannels loads the safe channel source rows used by
+// public probe administration. When channelIDs is non-empty, those rows are
+// locked before the complete response snapshot is read.
+func LoadPublicStatusProbeChannels(db *gorm.DB, channelIDs []int) ([]Channel, error) {
+	if db == nil {
+		db = DB
+	}
+	query := publicStatusProbeDB(db)
+	if len(channelIDs) > 0 {
+		var locked []Channel
+		if err := lockForUpdate(query).Select("id").Where("id IN ?", channelIDs).Find(&locked).Error; err != nil {
+			return nil, err
+		}
+	}
+	var channels []Channel
+	if err := query.
+		Select("id", "name", "type", "status", "models", "key", "channel_info").
+		Order("id ASC").
+		Find(&channels).Error; err != nil {
+		return nil, err
+	}
+	return channels, nil
 }
 
 func ApplyPublicStatusProbeConfigOption(raw string) error {
