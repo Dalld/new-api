@@ -181,7 +181,11 @@ func newIsolationProvider(t *testing.T, behavior isolationProviderBehavior) (*ht
 				writer.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			token := strings.TrimPrefix(payload.Messages[0].Content, "Reply with exactly this token and no other text: ")
+			token, ok := answerIsolationSemanticChallenge(payload.Messages[0].Content)
+			if !ok {
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
 			writer.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(writer).Encode(map[string]any{
 				"choices": []any{map[string]any{"message": map[string]any{"content": token}}},
@@ -203,6 +207,38 @@ func newIsolationProvider(t *testing.T, behavior isolationProviderBehavior) (*ht
 		defer mutex.Unlock()
 		return lastAuthorization
 	}
+}
+
+func answerIsolationSemanticChallenge(prompt string) (string, bool) {
+	categoryName := ""
+	options := []string(nil)
+	for _, line := range strings.Split(prompt, "\n") {
+		if value, found := strings.CutPrefix(line, "Category: "); found {
+			categoryName = strings.TrimSpace(value)
+		}
+		if value, found := strings.CutPrefix(line, "Options: "); found {
+			options = strings.Split(value, ", ")
+		}
+	}
+
+	answer := ""
+	for _, category := range semanticChallengeCategories {
+		if category.name != categoryName {
+			continue
+		}
+		for _, option := range options {
+			for _, word := range category.words {
+				if option != word {
+					continue
+				}
+				if answer != "" {
+					return "", false
+				}
+				answer = option
+			}
+		}
+	}
+	return answer, answer != ""
 }
 
 func seedIsolationBusinessState(t *testing.T, db *gorm.DB, baseURL string) publicstatusprobesetting.Target {

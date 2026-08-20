@@ -234,6 +234,10 @@ func TestProviderAdapterResponseErrorsAreStableAndSanitized(t *testing.T) {
 	for _, protocol := range adapterProtocols() {
 		for _, test := range tests {
 			t.Run(protocolName(protocol)+"/"+test.name, func(t *testing.T) {
+				wantCode := test.wantCode
+				if protocol == ProtocolAnthropicMessages && test.name == "missing structure" {
+					wantCode = ErrorEmptyResponse
+				}
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(test.status)
 					_, _ = io.WriteString(w, test.response)
@@ -246,11 +250,47 @@ func TestProviderAdapterResponseErrorsAreStableAndSanitized(t *testing.T) {
 				_, err = adapter.Probe(context.Background(), snapshot, Challenge{Prompt: adapterTestPrompt})
 
 				require.Error(t, err)
-				assert.Equal(t, test.wantCode, ErrorCodeOf(err))
-				assert.Equal(t, string(test.wantCode), err.Error())
+				assert.Equal(t, wantCode, ErrorCodeOf(err))
+				assert.Equal(t, string(wantCode), err.Error())
 				assert.NotContains(t, err.Error(), "provider-secret")
 			})
 		}
+	}
+}
+
+func TestAnthropicAdapterClassifiesStructuredErrorsAndNonTextResponses(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		wantCode ErrorCode
+	}{
+		{
+			name:     "structured error",
+			response: `{"type":"error","error":{"type":"invalid_request_error"}}`,
+			wantCode: ErrorProviderRejected,
+		},
+		{
+			name:     "thinking without text",
+			response: `{"type":"message","content":[{"type":"thinking","thinking":"internal"}]}`,
+			wantCode: ErrorEmptyResponse,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, test.response)
+			}))
+			t.Cleanup(server.Close)
+
+			snapshot := validAdapterSnapshot(ProtocolAnthropicMessages, server.URL)
+			adapter, err := AdapterFor(snapshot, server.Client())
+			require.NoError(t, err)
+
+			_, err = adapter.Probe(context.Background(), snapshot, Challenge{Prompt: adapterTestPrompt})
+
+			require.Error(t, err)
+			assert.Equal(t, test.wantCode, ErrorCodeOf(err))
+		})
 	}
 }
 

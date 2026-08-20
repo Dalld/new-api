@@ -30,6 +30,9 @@ func (a anthropicMessagesAdapter) Probe(ctx context.Context, snapshot Snapshot, 
 	if err := sendJSONProbe(ctx, a.client, target, headers, request, &response); err != nil {
 		return "", err
 	}
+	if response.Type == "error" || response.Error != nil {
+		return "", codedError(ErrorProviderRejected)
+	}
 
 	parts := make([]string, 0, len(response.Content))
 	found := false
@@ -41,7 +44,7 @@ func (a anthropicMessagesAdapter) Probe(ctx context.Context, snapshot Snapshot, 
 		parts = append(parts, *content.Text)
 	}
 	if !found {
-		return "", codedError(ErrorValidationFailed)
+		return "", codedError(ErrorEmptyResponse)
 	}
 	return boundedText(parts...)
 }
@@ -58,6 +61,10 @@ type anthropicMessage struct {
 }
 
 type anthropicResponse struct {
+	Type  string `json:"type"`
+	Error *struct {
+		Type string `json:"type"`
+	} `json:"error"`
 	Content []struct {
 		Type string  `json:"type"`
 		Text *string `json:"text"`

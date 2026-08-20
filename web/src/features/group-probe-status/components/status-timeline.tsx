@@ -104,11 +104,16 @@ export function StatusTimeline({
   const scrollPositionRef = useRef({ left: 0, atEnd: true })
   const hoverOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [activePointId, setActivePointId] = useState<string | null>(null)
+  const [activePointIdState, setActivePointId] = useState<string | null>(null)
   const pointIdentity = useMemo(
     () => points.map((point) => point.id).join('|'),
     [points]
   )
+  const activePointId =
+    activePointIdState !== null &&
+    points.some((point) => point.id === activePointIdState)
+      ? activePointIdState
+      : null
 
   const clearHoverTimers = useCallback(() => {
     if (hoverOpenTimerRef.current !== null) {
@@ -122,15 +127,6 @@ export function StatusTimeline({
   }, [])
 
   useEffect(() => clearHoverTimers, [clearHoverTimers])
-
-  useEffect(() => {
-    if (
-      activePointId !== null &&
-      !points.some((point) => point.id === activePointId)
-    ) {
-      setActivePointId(null)
-    }
-  }, [activePointId, pointIdentity, points])
 
   useEffect(() => {
     if (activePointId === null) return

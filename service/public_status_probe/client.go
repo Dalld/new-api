@@ -3,8 +3,8 @@ package public_status_probe
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -190,15 +190,48 @@ func NewChallenge() (Challenge, error) {
 	return newChallenge(rand.Reader)
 }
 
+var semanticChallengeCategories = []struct {
+	name  string
+	words []string
+}{
+	{name: "animal", words: []string{"cat", "dog", "tiger", "horse", "rabbit", "eagle", "dolphin", "wolf"}},
+	{name: "fruit", words: []string{"apple", "banana", "grape", "mango", "peach", "lemon", "cherry", "pear"}},
+	{name: "color", words: []string{"red", "blue", "green", "yellow", "purple", "pink", "black", "white"}},
+	{name: "country", words: []string{"japan", "france", "brazil", "canada", "egypt", "india", "norway", "kenya"}},
+	{name: "metal", words: []string{"iron", "gold", "copper", "silver", "zinc", "nickel", "lead", "tin"}},
+	{name: "vehicle", words: []string{"car", "truck", "train", "bicycle", "airplane", "boat", "scooter", "tram"}},
+	{name: "instrument", words: []string{"piano", "guitar", "violin", "drum", "flute", "trumpet", "harp", "cello"}},
+	{name: "drink", words: []string{"coffee", "tea", "juice", "milk", "soda", "water", "cocoa", "lemonade"}},
+}
+
 func newChallenge(random io.Reader) (Challenge, error) {
 	bytes := make([]byte, 12)
 	if _, err := io.ReadFull(random, bytes); err != nil {
 		return Challenge{}, codedError(ErrorNetwork)
 	}
-	expected := "psp_" + hex.EncodeToString(bytes)
+
+	categoryIndex := int(bytes[0]) % len(semanticChallengeCategories)
+	category := semanticChallengeCategories[categoryIndex]
+	expected := category.words[int(bytes[1])%len(category.words)]
+	options := []string{expected}
+	for index := 0; len(options) < 5; index++ {
+		otherCategory := semanticChallengeCategories[(categoryIndex+1+index)%len(semanticChallengeCategories)]
+		candidate := otherCategory.words[int(bytes[6+index])%len(otherCategory.words)]
+		options = append(options, candidate)
+	}
+	for index := len(options) - 1; index > 0; index-- {
+		swapIndex := int(bytes[index+2]) % (index + 1)
+		options[index], options[swapIndex] = options[swapIndex], options[index]
+	}
+
 	return Challenge{
 		Expected: expected,
-		Prompt:   "Reply with exactly this token and no other text: " + expected,
+		Prompt: fmt.Sprintf(
+			"Pick the word that belongs to the %s category. Reply with ONLY that one word.\nCategory: %s\nOptions: %s\nA:",
+			category.name,
+			category.name,
+			strings.Join(options, ", "),
+		),
 	}, nil
 }
 
@@ -275,8 +308,8 @@ func transportOrProbeErrorCode(ctx context.Context, err error) ErrorCode {
 }
 
 func containsExpectedToken(value, expected string) bool {
-	expected = normalizedOutput(expected)
-	if !isValidChallengeNonce(expected) {
+	expectedTokens := validationTokens(expected)
+	if len(expectedTokens) != 1 {
 		return false
 	}
 
@@ -285,28 +318,13 @@ func containsExpectedToken(value, expected string) bool {
 		return false
 	}
 
-	nonceCount := 0
+	answerCount := 0
 	for _, token := range valueTokens {
-		if strings.HasPrefix(token, "psp_") {
-			nonceCount++
-			if token != expected {
-				return false
-			}
+		if token == expectedTokens[0] {
+			answerCount++
 		}
 	}
-	return nonceCount == 1
-}
-
-func isValidChallengeNonce(value string) bool {
-	if len(value) != len("psp_")+24 || !strings.HasPrefix(value, "psp_") {
-		return false
-	}
-	for _, char := range value[len("psp_"):] {
-		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
-			return false
-		}
-	}
-	return true
+	return answerCount == 1
 }
 
 func validationTokens(value string) []string {

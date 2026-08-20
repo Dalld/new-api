@@ -245,7 +245,7 @@ export function GroupProbeStatusContent({
               {group}
             </h2>
             <div
-              className='grid grid-cols-1 items-stretch gap-4 md:grid-cols-2 xl:grid-cols-3'
+              className='grid min-w-0 grid-cols-1 items-stretch gap-4 md:grid-cols-2 xl:grid-cols-3'
               data-testid='status-target-grid'
             >
               {groupTargets.map((target) => (
@@ -326,8 +326,11 @@ export function GroupProbeStatusContent({
 
   return (
     <div className='mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-10'>
-      <header className='border-border flex flex-row flex-wrap items-end justify-between gap-x-5 gap-y-4 border-b pb-6'>
-        <div className='min-w-0 flex-1 space-y-3'>
+      <header
+        className='border-border flex flex-col gap-4 border-b pb-6 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between sm:gap-x-5'
+        data-testid='status-page-header'
+      >
+        <div className='w-full min-w-0 space-y-3 sm:flex-1'>
           <div className='text-primary flex items-center gap-2 text-sm font-medium'>
             <Activity className='size-4' aria-hidden='true' />
             <span>{t('Synthetic probes')}</span>
@@ -347,10 +350,13 @@ export function GroupProbeStatusContent({
           </div>
         </div>
 
-        <div className='flex min-h-9 shrink-0 items-center gap-2'>
-          <div className='text-muted-foreground flex min-w-0 items-center gap-2 text-sm'>
+        <div
+          className='flex min-h-9 w-full min-w-0 items-center justify-between gap-2 sm:w-auto sm:shrink-0 sm:justify-start'
+          data-testid='status-updated-controls'
+        >
+          <div className='text-muted-foreground flex min-w-0 flex-1 items-center gap-2 text-sm sm:flex-none'>
             <Clock3 className='size-4 shrink-0' aria-hidden='true' />
-            <span className='max-w-[min(52vw,18rem)] truncate'>
+            <span className='min-w-0 truncate sm:max-w-72'>
               {data
                 ? t('Updated {{time}}', {
                     time: formatGeneratedAt(data.generated_at),

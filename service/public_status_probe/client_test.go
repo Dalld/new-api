@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -401,16 +400,14 @@ func TestErrorCodeSanitizersAllowOnlyStableCodes(t *testing.T) {
 	assert.Empty(t, nilProbeErr.Error())
 }
 
-func TestChallengeNonceIsRandomAndExplicit(t *testing.T) {
-	first, err := NewChallenge()
-	require.NoError(t, err)
-	second, err := NewChallenge()
+func TestChallengeIsRandomAndExplicit(t *testing.T) {
+	challenge, err := newChallenge(bytes.NewReader(make([]byte, 12)))
 	require.NoError(t, err)
 
-	assert.Regexp(t, regexp.MustCompile(`^psp_[a-f0-9]{24}$`), first.Expected)
-	assert.NotEqual(t, first.Expected, second.Expected)
-	assert.Contains(t, first.Prompt, first.Expected)
-	assert.NotContains(t, first.Expected, "secret")
+	assert.Equal(t, "cat", challenge.Expected)
+	assert.Contains(t, challenge.Prompt, challenge.Expected)
+	assert.Contains(t, challenge.Prompt, "Category: animal")
+	assert.Contains(t, challenge.Prompt, "Reply with ONLY that one word")
 }
 
 func TestContainsExpectedTokenAllowsShortWrappedResponses(t *testing.T) {
@@ -431,20 +428,23 @@ func TestContainsExpectedTokenAllowsShortWrappedResponses(t *testing.T) {
 		{name: "short token label", value: "Here is the token: " + token, want: true},
 		{name: "prompt echo", value: "Reply with exactly this token and no other text: " + token, want: false},
 		{name: "repeated token", value: token + " " + token, want: false},
-		{name: "wrong token before expected", value: wrongToken + "; " + token, want: false},
+		{name: "wrong answer", value: wrongToken, want: false},
 		{name: "prefixed", value: "prefix" + token, want: false},
 		{name: "suffixed", value: token + "suffix", want: false},
 		{name: "combined label and markdown", value: "answer: `" + token + "`", want: true},
-		{name: "invalid expected shape", value: token, want: false},
+		{name: "punctuation only expected", value: token, want: false},
 		{name: "empty expected", value: token, want: false},
+		{name: "multi-word expected", value: token, want: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			expected := token
 			if test.name == "empty expected" {
 				expected = ""
-			} else if test.name == "invalid expected shape" {
-				expected = token + "."
+			} else if test.name == "punctuation only expected" {
+				expected = "."
+			} else if test.name == "multi-word expected" {
+				expected = "the " + token
 			}
 			assert.Equal(t, test.want, containsExpectedToken(test.value, expected))
 		})

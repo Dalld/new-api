@@ -261,10 +261,25 @@ describe('public probe status page', () => {
 
   test('renders responsive target cards with dual latency, availability, and exactly 60 buttons', async () => {
     const rendered = await renderStatus({ data: statusData })
+    const pageHeader = rendered.container.querySelector<HTMLElement>(
+      '[data-testid="status-page-header"]'
+    )
+    assert.ok(pageHeader)
+    assert.match(pageHeader.className, /flex-col/)
+    assert.match(pageHeader.className, /sm:flex-row/)
+
+    const updatedControls = pageHeader.querySelector<HTMLElement>(
+      '[data-testid="status-updated-controls"]'
+    )
+    assert.ok(updatedControls)
+    assert.match(updatedControls.className, /w-full/)
+    assert.match(updatedControls.className, /sm:w-auto/)
+
     const grid = rendered.container.querySelector<HTMLElement>(
       '[data-testid="status-target-grid"]'
     )
     assert.ok(grid)
+    assert.match(grid.className, /min-w-0/)
     assert.match(grid.className, /md:grid-cols-2/)
     assert.match(grid.className, /xl:grid-cols-3/)
 

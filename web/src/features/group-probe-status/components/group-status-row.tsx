@@ -158,7 +158,7 @@ export function GroupStatusRow({
         </Badge>
       </header>
 
-      <dl className='grid grid-cols-2 gap-3'>
+      <dl className='grid min-w-0 grid-cols-2 gap-3'>
         <div className='bg-muted/45 min-w-0 rounded-md p-3'>
           <dt className='text-muted-foreground truncate text-xs'>
             {t('Conversation latency')}
