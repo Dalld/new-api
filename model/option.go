@@ -227,8 +227,12 @@ func loadOptionsFromDatabase() error {
 			continue
 		}
 		if err := validateOptionValue(option.Key, option.Value); err != nil {
-			loadErrors = append(loadErrors, fmt.Errorf("validate option %q: %w", option.Key, err))
-			continue
+			// 服务器托管的只读配置（如 legacy access token 退役时间）由 InitDB
+			// 写入内存，写入路径的校验器按设计拒绝它；启动加载时不应因此报错。
+			if !errors.Is(err, errLegacyRetireAtReadOnly) {
+				loadErrors = append(loadErrors, fmt.Errorf("validate option %q: %w", option.Key, err))
+				continue
+			}
 		}
 		if err := updateOptionMap(option.Key, option.Value); err != nil {
 			loadErrors = append(loadErrors, fmt.Errorf("apply option %q: %w", option.Key, err))
