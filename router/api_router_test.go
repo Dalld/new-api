@@ -43,8 +43,11 @@ func setupAffiliateBindRouteTestDB(t *testing.T) *gorm.DB {
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}, &model.Option{}))
+	// Route tests authenticate with legacy tokens, so keep the production
+	// compatibility window open instead of tripping the retirement deadline.
 	model.DB = db
+	require.NoError(t, model.EnsureLegacyAccessTokenRetireAt(common.GetTimestamp()))
 	model.LOG_DB = db
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
 	common.SetLogDatabaseType(common.DatabaseTypeSQLite)

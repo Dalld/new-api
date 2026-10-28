@@ -18,21 +18,19 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { describe, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { join, resolve } from 'node:path'
+import { describe, test } from 'vitest'
 
 import { STATIC_I18N_KEYS } from './static-keys'
 
 type Locale = { translation: Record<string, string> }
 
-const i18nDir = dirname(fileURLToPath(import.meta.url))
-const srcDir = join(i18nDir, '..')
+const srcDir = resolve(process.cwd(), 'src')
+const i18nDir = join(srcDir, 'i18n')
 const sourceRoots = [
   join(srcDir, 'features', 'affiliate'),
   join(srcDir, 'features', 'my-affiliate'),
   join(srcDir, 'features', 'group-probe-status'),
-  join(srcDir, 'features', 'system-settings', 'operations', 'group-probe'),
   join(
     srcDir,
     'features',

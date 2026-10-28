@@ -17,74 +17,37 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { after, afterEach, describe, test } from 'node:test'
+import { createInstance } from 'i18next'
+import { act } from 'react'
+import { createRoot } from 'react-dom/client'
+import { I18nextProvider, initReactI18next } from 'react-i18next'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { afterAll, afterEach, describe, test, vi } from 'vitest'
 
-import { Window } from 'happy-dom'
+import { api } from '@/lib/api'
 
+import { SettingsPageProvider } from '../../../components/settings-page-context'
 import type { PublicStatusProbeConfig } from '../types'
+import { PublicStatusProbeSettingsSection } from '../index'
 
-const domWindow = new Window()
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'HTMLButtonElement',
-  'HTMLInputElement',
-  'HTMLFormElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'KeyboardEvent',
-  'PointerEvent',
-  'MouseEvent',
-  'FocusEvent',
-  'CustomEvent',
-  'MutationObserver',
-  'ResizeObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
-domWindow.HTMLElement.prototype.scrollIntoView = () => undefined
-
-const bunTestModule = 'bun:test'
-const { mock } = await import(bunTestModule)
-const isolatedApi = {
-  delete: async (..._args: unknown[]) => ({ data: {} }),
-  get: async (..._args: unknown[]) => ({ data: {} }),
-  post: async (..._args: unknown[]) => ({ data: {} }),
-  put: async (..._args: unknown[]) => ({ data: {} }),
-}
-mock.module('@/lib/api', () => ({
-  api: isolatedApi,
+vi.mock('@/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api')>()),
+  api: {
+    delete: async () => ({ data: {} }),
+    get: async () => ({ data: {} }),
+    post: async () => ({ data: {} }),
+    put: async () => ({ data: {} }),
+  },
   getStatus: async () => ({}),
 }))
-mock.module('@/hooks', () => ({
+vi.mock('@/hooks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/hooks')>()),
   useMediaQuery: () => false,
 }))
-mock.module('@tanstack/react-router', () => ({
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useBlocker: () => ({ status: 'idle' }),
 }))
-
-const { act } = await import('react')
-const { createRoot } = await import('react-dom/client')
-const { QueryClient, QueryClientProvider } =
-  await import('@tanstack/react-query')
-const { createInstance } = await import('i18next')
-const { I18nextProvider, initReactI18next } = await import('react-i18next')
-const { api } = await import('@/lib/api')
-const { SettingsPageProvider } =
-  await import('../../../components/settings-page-context')
-const { PublicStatusProbeSettingsSection } = await import('../index')
 
 const i18n = createInstance()
 await i18n.use(initReactI18next).init({
@@ -200,13 +163,13 @@ function getInput(labelText: string) {
 async function changeInput(input: HTMLInputElement, value: string) {
   await act(async () => {
     const valueSetter = Object.getOwnPropertyDescriptor(
-      domWindow.HTMLInputElement.prototype,
+      window.HTMLInputElement.prototype,
       'value'
     )?.set
     assert.ok(valueSetter)
     valueSetter.call(input, value)
     input.dispatchEvent(
-      new domWindow.Event('input', { bubbles: true }) as unknown as Event
+      new window.Event('input', { bubbles: true }) as unknown as Event
     )
   })
 }
@@ -251,7 +214,6 @@ afterEach(async () => {
   document.body.replaceChildren()
 })
 
-after(() => domWindow.close())
 
 describe('public status probe management section', () => {
   test('shows loading, retries a failed request, and keeps create available for an empty target list', async () => {
@@ -339,10 +301,10 @@ describe('public status probe management section', () => {
     assert.equal(getInput('Probe interval (seconds)').readOnly, true)
 
     await changeInput(getInput('Ping timeout (seconds)'), '9')
-    const dirtyBeforeUnload = new domWindow.Event('beforeunload', {
+    const dirtyBeforeUnload = new window.Event('beforeunload', {
       cancelable: true,
     })
-    domWindow.dispatchEvent(dirtyBeforeUnload)
+    window.dispatchEvent(dirtyBeforeUnload)
     assert.equal(dirtyBeforeUnload.defaultPrevented, true)
     await act(async () => findButton('Save probe settings', true).click())
     await waitForCondition(
@@ -350,17 +312,17 @@ describe('public status probe management section', () => {
       'global save missing'
     )
     assert.equal(putPayloads[0]?.ping_timeout_seconds, 9)
-    const savingBeforeUnload = new domWindow.Event('beforeunload', {
+    const savingBeforeUnload = new window.Event('beforeunload', {
       cancelable: true,
     })
-    domWindow.dispatchEvent(savingBeforeUnload)
+    window.dispatchEvent(savingBeforeUnload)
     assert.equal(savingBeforeUnload.defaultPrevented, true)
 
     await act(async () => resolveGlobalSave())
-    const cleanBeforeUnload = new domWindow.Event('beforeunload', {
+    const cleanBeforeUnload = new window.Event('beforeunload', {
       cancelable: true,
     })
-    domWindow.dispatchEvent(cleanBeforeUnload)
+    window.dispatchEvent(cleanBeforeUnload)
     assert.equal(cleanBeforeUnload.defaultPrevented, false)
 
     const toggle = document.querySelector<HTMLElement>(
@@ -543,10 +505,10 @@ describe('public status probe management section', () => {
     assert.equal(getInput('Immutable key').value, 'probe-codex')
     assert.equal(getInput('Immutable key').readOnly, true)
     await changeInput(getInput('Display name'), 'Codex draft')
-    const beforeUnload = new domWindow.Event('beforeunload', {
+    const beforeUnload = new window.Event('beforeunload', {
       cancelable: true,
     })
-    domWindow.dispatchEvent(beforeUnload)
+    window.dispatchEvent(beforeUnload)
     assert.equal(beforeUnload.defaultPrevented, true)
     assert.equal(
       document.querySelector('label[for="public-status-probe-target-enabled"]')

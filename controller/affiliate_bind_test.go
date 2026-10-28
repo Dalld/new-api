@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -16,7 +17,7 @@ import (
 
 func TestBindAffiliateInviterControllerSuccessAndAudit(t *testing.T) {
 	db := setupManageUserTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.AuditLog{}))
 
 	invitee := model.User{Username: "controller-invitee", Password: "password123", AffCode: "controller-invitee-code", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}
 	inviter := model.User{Username: "controller-inviter", Password: "password123", AffCode: "controller-inviter-code", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}
@@ -40,16 +41,18 @@ func TestBindAffiliateInviterControllerSuccessAndAudit(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"success":true`)
 	assert.Contains(t, recorder.Body.String(), `"invitee_id":`)
 
-	var logEntry model.Log
-	require.NoError(t, db.Where("type = ? AND content LIKE ?", model.LogTypeManage, "%Bound inviter%").First(&logEntry).Error)
-	assert.Equal(t, 9999, logEntry.UserId)
-	assert.Contains(t, logEntry.Other, `"action":"affiliate.inviter_bind"`)
-	assert.Contains(t, logEntry.Other, `"invitee_id":`)
-	assert.Contains(t, logEntry.Other, `"inviter_id":`)
-	assert.Contains(t, logEntry.Other, `"previous_inviter_id":0`)
-	assert.Contains(t, logEntry.Other, `"admin_username":"root-operator"`)
-	assert.Contains(t, logEntry.Other, `"admin_role":100`)
-	assert.Contains(t, logEntry.Other, `"auth_method":"session"`)
+	var auditEntry model.AuditLog
+	require.NoError(t, db.Where("action = ?", "affiliate.inviter_bind").First(&auditEntry).Error)
+	assert.Equal(t, 9999, auditEntry.UserId)
+	require.NotNil(t, auditEntry.Other.Op)
+	assert.Equal(t, "affiliate.inviter_bind", auditEntry.Other.Op.Action)
+	assert.NotZero(t, auditEntry.Other.Op.Params["invitee_id"])
+	assert.NotZero(t, auditEntry.Other.Op.Params["inviter_id"])
+	assert.Equal(t, json.RawMessage("0"), auditEntry.Other.Op.Params["previous_inviter_id"])
+	require.NotNil(t, auditEntry.Other.AdminInfo)
+	assert.Equal(t, "root-operator", auditEntry.Other.AdminInfo.AdminUsername)
+	assert.Equal(t, common.RoleRootUser, auditEntry.Other.AdminInfo.AdminRole)
+	assert.Equal(t, "session", auditEntry.Other.AdminInfo.AuthMethod)
 }
 
 func TestBindAffiliateInviterControllerRejectsInvalidPayload(t *testing.T) {

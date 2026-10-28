@@ -17,41 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { after, describe, test } from 'node:test'
+import { afterAll, describe, test } from 'vitest'
 
-import { Window } from 'happy-dom'
 
 import type { PublicProbeData, PublicProbePoint } from '../types'
-
-const domWindow = new Window()
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'HTMLButtonElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'MouseEvent',
-  'PointerEvent',
-  'KeyboardEvent',
-  'FocusEvent',
-  'CustomEvent',
-  'MutationObserver',
-  'ResizeObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
 
 const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
@@ -176,7 +145,6 @@ async function wait(milliseconds: number) {
 }
 
 describe('public probe status page', () => {
-  after(() => domWindow.close())
 
   test('keeps loading, error, empty, and partial states in a stable shell', async () => {
     const loading = await renderStatus({ isPending: true })
@@ -588,7 +556,7 @@ describe('public probe status page', () => {
   })
 
   test('preserves an active point, focus, and horizontal scroll across refresh', async () => {
-    const prototype = domWindow.HTMLElement.prototype
+    const prototype = window.HTMLElement.prototype
     const originalScrollWidth = Object.getOwnPropertyDescriptor(
       prototype,
       'scrollWidth'

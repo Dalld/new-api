@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +31,10 @@ func setupPublicStatusProbeAdminControllerTestDB(t *testing.T) *gorm.DB {
 
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.AutoMigrate(&model.Option{}))
-	require.NoError(t, db.AutoMigrate(&model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.AuditLog{}))
+	// These tests authenticate with legacy user access tokens; keep the legacy
+	// compatibility window open, exactly as InitDB does in production.
+	require.NoError(t, model.EnsureLegacyAccessTokenRetireAt(common.GetTimestamp()))
 	return db
 }
 
@@ -555,20 +559,14 @@ func TestPublicStatusProbeAdminRejectsMissingTargetAndStaleConfigVersion(t *test
 
 	staleUpdate := performPublicStatusProbeAdminRequest(t, engine, http.MethodPut, "/api/public-status-probe/targets/probe-conflict", `{"version":11,"enabled":true,"group":"group-z","display_name":"Stale Update","model":"gpt-5.5","protocol":"openai_chat","channel_id":404,"key_index":0}`, rootToken)
 	assert.Equal(t, http.StatusConflict, staleUpdate.Code)
-	var auditLog model.Log
-	require.NoError(t, db.Where("type = ?", model.LogTypeManage).Order("id desc").First(&auditLog).Error)
-	assert.NotContains(t, auditLog.Other, "Stale Update")
-	var auditPayload struct {
-		Op struct {
-			Action string                 `json:"action"`
-			Params map[string]interface{} `json:"params"`
-		} `json:"op"`
-	}
-	require.NoError(t, common.Unmarshal([]byte(auditLog.Other), &auditPayload))
-	assert.Equal(t, "public_status_probe.target_update", auditPayload.Op.Action)
-	assert.Equal(t, "probe-conflict", auditPayload.Op.Params["target_key"])
-	assert.Equal(t, float64(11), auditPayload.Op.Params["version"])
-	assert.Equal(t, false, auditPayload.Op.Params["success"])
+	var auditLog model.AuditLog
+	require.NoError(t, db.Where("action = ?", "public_status_probe.target_update").Order("id desc").First(&auditLog).Error)
+	assert.NotContains(t, auditLog.Content, "Stale Update")
+	require.NotNil(t, auditLog.Other.Op)
+	assert.Equal(t, "public_status_probe.target_update", auditLog.Other.Op.Action)
+	assert.Equal(t, json.RawMessage(`"probe-conflict"`), auditLog.Other.Op.Params["target_key"])
+	assert.Equal(t, json.RawMessage("11"), auditLog.Other.Op.Params["version"])
+	assert.Equal(t, json.RawMessage("false"), auditLog.Other.Op.Params["success"])
 
 	conflict := performPublicStatusProbeAdminRequest(t, engine, http.MethodPut, "/api/public-status-probe/config", `{"version":11,"enabled":false,"ping_timeout_seconds":8,"chat_timeout_seconds":45,"degraded_latency_ms":6000,"concurrency":5,"retention_days":7}`, rootToken)
 	assert.Equal(t, http.StatusConflict, conflict.Code)

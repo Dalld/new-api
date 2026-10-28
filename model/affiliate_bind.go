@@ -191,10 +191,10 @@ func BindAffiliateInviter(inviteeID int, inviterID int) (*AffiliateBindResult, e
 		return nil, err
 	}
 
-	if err := InvalidateUserCache(inviteeID); err != nil {
+	if err := invalidateUserCache(inviteeID); err != nil {
 		common.SysLog(fmt.Sprintf("failed to invalidate invitee cache after affiliate bind: %v", err))
 	}
-	if err := InvalidateUserCache(inviterID); err != nil {
+	if err := invalidateUserCache(inviterID); err != nil {
 		common.SysLog(fmt.Sprintf("failed to invalidate inviter cache after affiliate bind: %v", err))
 	}
 	return result, nil

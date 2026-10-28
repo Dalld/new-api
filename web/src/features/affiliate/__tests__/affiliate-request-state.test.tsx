@@ -17,40 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { after, describe, test } from 'node:test'
+import { afterAll, describe, test } from 'vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Window } from 'happy-dom'
 
 import { api } from '@/lib/api'
 
 import type { AffiliateSearchState } from '../types'
-
-const domWindow = new Window()
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'HTMLButtonElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'CustomEvent',
-  'MutationObserver',
-  'ResizeObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
 
 const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
@@ -100,7 +73,6 @@ function findButton(container: HTMLElement, text: string) {
 }
 
 describe('affiliate administrator request states', () => {
-  after(() => domWindow.close())
 
   test('isolates tab failures and retries only the active request', async () => {
     const originalAdapter = api.defaults.adapter

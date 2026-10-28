@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { describe, test, vi } from 'vitest'
 
 import type {
   PublicProbePoint,
@@ -25,14 +25,14 @@ import type {
   PublicProbeTarget,
 } from '../types'
 
-const bunTestModule = 'bun:test'
-const { mock } = await import(bunTestModule)
-const apiRequests: Array<{
-  url: string
-  config: { skipErrorHandler?: boolean }
-}> = []
+const { apiRequests } = vi.hoisted(() => ({
+  apiRequests: [] as Array<{
+    url: string
+    config: { skipErrorHandler?: boolean }
+  }>,
+}))
 
-mock.module('@/lib/api', () => ({
+vi.mock('@/lib/api', () => ({
   api: {
     get: async (url: string, config: { skipErrorHandler?: boolean } = {}) => {
       apiRequests.push({ url, config })
@@ -46,9 +46,8 @@ mock.module('@/lib/api', () => ({
   },
 }))
 
-const { groupProbeStatusQueryOptions, parsePublicProbeStatus } =
-  await import('../api')
-const { normalizeProbeHistory, padProbeHistory } = await import('../history')
+import { groupProbeStatusQueryOptions, parsePublicProbeStatus } from '../api'
+import { normalizeProbeHistory, padProbeHistory } from '../history'
 
 const generatedAt = 2_000_001_600
 

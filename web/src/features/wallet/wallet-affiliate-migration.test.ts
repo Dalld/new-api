@@ -18,20 +18,14 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { describe, test } from 'node:test'
+import { resolve } from 'node:path'
+import { describe, test } from 'vitest'
 
-const walletSource = readFileSync(
-  new URL('./index.tsx', import.meta.url),
-  'utf8'
-)
-const walletApiSource = readFileSync(
-  new URL('./api.ts', import.meta.url),
-  'utf8'
-)
-const walletHooksSource = readFileSync(
-  new URL('./hooks/index.ts', import.meta.url),
-  'utf8'
-)
+const walletDir = resolve(process.cwd(), 'src/features/wallet')
+
+const walletSource = readFileSync(`${walletDir}/index.tsx`, 'utf8')
+const walletApiSource = readFileSync(`${walletDir}/api.ts`, 'utf8')
+const walletHooksSource = readFileSync(`${walletDir}/hooks/index.ts`, 'utf8')
 
 describe('wallet affiliate migration', () => {
   test('removes the referral card and transfer state from Wallet', () => {

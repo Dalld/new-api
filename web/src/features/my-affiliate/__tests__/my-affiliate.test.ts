@@ -18,7 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { describe, test } from 'node:test'
+import { resolve } from 'node:path'
+import { describe, test } from 'vitest'
 
 import { buildPageQuery, createInviteLink } from '../lib'
 import {
@@ -27,12 +28,12 @@ import {
 } from '../schemas'
 
 const componentSource = readFileSync(
-  new URL('../index.tsx', import.meta.url),
+  resolve(process.cwd(), 'src/features/my-affiliate/index.tsx'),
   'utf8'
 )
-const apiSource = readFileSync(new URL('../api.ts', import.meta.url), 'utf8')
+const apiSource = readFileSync(resolve(process.cwd(), 'src/features/my-affiliate/api.ts'), 'utf8')
 const transferHookSource = readFileSync(
-  new URL('../hooks/use-affiliate-transfer.ts', import.meta.url),
+  resolve(process.cwd(), 'src/features/my-affiliate/hooks/use-affiliate-transfer.ts'),
   'utf8'
 )
 

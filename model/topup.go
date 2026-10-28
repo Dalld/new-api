@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 
 	"github.com/QuantumNous/new-api/common"
@@ -54,12 +55,75 @@ var (
 	ErrTopUpQuotaInvalid     = errors.New("topup quota invalid")
 	ErrSettlementMetadata    = errors.New("settlement user metadata invalid")
 	ErrCommissionSnapshot    = errors.New("commission snapshot invalid")
+	// The quota errors reach the web console, so they carry message keys.
+	ErrInvalidTopUpQuota        error = common.NewMessage("Invalid top-up quota")
+	ErrTopUpQuotaLimitExceeded  error = common.NewMessage("Top-up quota limit exceeded")
+	ErrWalletQuotaLimitExceeded error = common.NewMessage("Wallet quota limit exceeded")
 )
 
 func (topUp *TopUp) Insert() error {
 	var err error
 	err = DB.Create(topUp).Error
 	return err
+}
+
+func topUpQuotaMaxCurrent(creditedQuota int) (int, error) {
+	if creditedQuota <= 0 || creditedQuota > common.MaxWalletQuota {
+		return 0, ErrInvalidTopUpQuota
+	}
+	return common.MaxWalletQuota - creditedQuota, nil
+}
+
+// ValidateTopUpQuotaCapacity performs the user-facing pre-payment check. The
+// settlement path repeats the same invariant with an atomic conditional
+// update, because the wallet balance can change after checkout creation.
+func ValidateTopUpQuotaCapacity(userId int, creditedQuota int) error {
+	maxCurrentQuota, err := topUpQuotaMaxCurrent(creditedQuota)
+	if err != nil {
+		return err
+	}
+
+	var user User
+	if err := DB.Select("quota").Where("id = ?", userId).First(&user).Error; err != nil {
+		return err
+	}
+	if user.Quota > maxCurrentQuota {
+		return ErrTopUpQuotaLimitExceeded
+	}
+	return nil
+}
+
+// creditTopUpQuota atomically enforces the wallet ceiling while adding quota.
+// Keeping the predicate and increment in one UPDATE prevents two concurrent
+// callbacks from both passing a separate read/check.
+func creditTopUpQuota(tx *gorm.DB, userId int, creditedQuota int, updates map[string]any) error {
+	maxCurrentQuota, err := topUpQuotaMaxCurrent(creditedQuota)
+	if err != nil {
+		return err
+	}
+
+	updateFields := make(map[string]any, len(updates)+1)
+	maps.Copy(updateFields, updates)
+	updateFields["quota"] = gorm.Expr("quota + ?", creditedQuota)
+
+	result := tx.Model(&User{}).
+		Where("id = ? AND quota <= ?", userId, maxCurrentQuota).
+		Updates(updateFields)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 1 {
+		return nil
+	}
+
+	var count int64
+	if err := tx.Model(&User{}).Where("id = ?", userId).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return ErrTopUpQuotaLimitExceeded
 }
 
 func (topUp *TopUp) Update() error {
@@ -181,8 +245,8 @@ func settlementQuota(topUp *TopUp) (int64, error) {
 	return int64(quota), nil
 }
 
-func settlementUserUpdates(current *User, metadata map[string]interface{}, quota int64) (map[string]interface{}, error) {
-	updates := map[string]interface{}{"quota": gorm.Expr("quota + ?", quota)}
+func settlementUserUpdates(current *User, metadata map[string]interface{}) (map[string]interface{}, error) {
+	updates := map[string]interface{}{}
 	for key, value := range metadata {
 		text, ok := value.(string)
 		if !ok {
@@ -244,7 +308,7 @@ func SettleTopUp(request TopUpSettlementRequest) (*TopUpSettlementResult, error)
 		if err := tx.Where("id = ?", topUp.UserId).First(&invitee).Error; err != nil {
 			return err
 		}
-		userUpdates, err := settlementUserUpdates(&invitee, request.UpdateUser, quota)
+		userUpdates, err := settlementUserUpdates(&invitee, request.UpdateUser)
 		if err != nil {
 			return err
 		}
@@ -266,12 +330,8 @@ func SettleTopUp(request TopUpSettlementRequest) (*TopUpSettlementResult, error)
 		if orderUpdate.RowsAffected != 1 {
 			return ErrTopUpStatusInvalid
 		}
-		userUpdate := tx.Model(&User{}).Where("id = ?", topUp.UserId).Updates(userUpdates)
-		if userUpdate.Error != nil {
-			return userUpdate.Error
-		}
-		if userUpdate.RowsAffected != 1 {
-			return gorm.ErrRecordNotFound
+		if err := creditTopUpQuota(tx, topUp.UserId, int(quota), userUpdates); err != nil {
+			return err
 		}
 
 		result.QuotaAdded = quota
@@ -332,7 +392,30 @@ func SettleTopUp(request TopUpSettlementRequest) (*TopUpSettlementResult, error)
 	if err != nil {
 		return nil, err
 	}
+	if result != nil && !result.AlreadySettled {
+		// 充值授信已提交，补进用户缓存余额；缓存未命中时下次读取会从数据库水合。
+		syncCreditUserQuotaCache(result.UserID, int(result.QuotaAdded), "topup")
+	}
 	return result, nil
+}
+
+// RechargeEpay 原子完成易支付订单，保留给易支付回调与既有测试使用。
+// 与其它渠道共用 SettleTopUp：订单行锁、状态校验、额度增加与（可选）分销佣金
+// 在同一个事务内完成，因此并发/重复回调（含多实例部署）最多充值一次。
+// alreadyDone=true 表示订单此前已完成，本次为幂等重复回调。
+func RechargeEpay(tradeNo string, actualPaymentMethod string, callerIp string) (alreadyDone bool, err error) {
+	result, err := SettleTopUp(TopUpSettlementRequest{
+		TradeNo:                 tradeNo,
+		ExpectedPaymentProvider: PaymentProviderEpay,
+		VerifiedPaymentMethod:   actualPaymentMethod,
+	})
+	if err != nil {
+		return false, err
+	}
+	if !result.AlreadySettled {
+		RecordTopupLog(result.UserID, common.NewMessage("{{provider}} top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}", map[string]any{"provider": "Epay", "quota": logger.FormatQuota(int(result.QuotaAdded)), "amount": result.PaidMoney}), callerIp, result.PaymentMethod, PaymentProviderEpay)
+	}
+	return result.AlreadySettled, nil
 }
 
 func Recharge(referenceId string, customerId string, callerIp string) (err error) {
@@ -345,7 +428,7 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 		return errors.New("充值失败，请稍后重试")
 	}
 	if !result.AlreadySettled {
-		RecordTopupLog(result.UserID, fmt.Sprintf("使用在线充值成功，充值额度: %v，支付金额：%s", logger.FormatQuota(int(result.QuotaAdded)), result.PaidMoney), callerIp, result.PaymentMethod, PaymentMethodStripe)
+		RecordTopupLog(result.UserID, common.NewMessage("{{provider}} top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}", map[string]any{"provider": "Stripe", "quota": logger.FormatQuota(int(result.QuotaAdded)), "amount": result.PaidMoney}), callerIp, result.PaymentMethod, PaymentMethodStripe)
 	}
 	return nil
 }
@@ -516,7 +599,7 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 		return err
 	}
 	if !result.AlreadySettled {
-		RecordTopupLog(result.UserID, fmt.Sprintf("管理员补单成功，充值额度: %v，支付金额：%s", logger.FormatQuota(int(result.QuotaAdded)), result.PaidMoney), callerIp, result.PaymentMethod, PaymentProviderAdmin)
+		RecordTopupLog(result.UserID, common.NewMessage("{{provider}} top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}", map[string]any{"provider": "Admin", "quota": logger.FormatQuota(int(result.QuotaAdded)), "amount": result.PaidMoney}), callerIp, result.PaymentMethod, PaymentProviderAdmin)
 	}
 	return nil
 }
@@ -531,7 +614,7 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 		return errors.New("充值失败，请稍后重试")
 	}
 	if !result.AlreadySettled {
-		RecordTopupLog(result.UserID, fmt.Sprintf("使用Creem充值成功，充值额度: %v，支付金额：%s", result.QuotaAdded, result.PaidMoney), callerIp, result.PaymentMethod, PaymentMethodCreem)
+		RecordTopupLog(result.UserID, common.NewMessage("{{provider}} top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}", map[string]any{"provider": "Creem", "quota": logger.FormatQuota(int(result.QuotaAdded)), "amount": result.PaidMoney}), callerIp, result.PaymentMethod, PaymentMethodCreem)
 	}
 	return nil
 }
@@ -543,7 +626,7 @@ func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 		return errors.New("充值失败，请稍后重试")
 	}
 	if !result.AlreadySettled {
-		RecordTopupLog(result.UserID, fmt.Sprintf("Waffo充值成功，充值额度: %v，支付金额: %s", logger.FormatQuota(int(result.QuotaAdded)), result.PaidMoney), callerIp, result.PaymentMethod, PaymentMethodWaffo)
+		RecordTopupLog(result.UserID, common.NewMessage("{{provider}} top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}", map[string]any{"provider": "Waffo", "quota": logger.FormatQuota(int(result.QuotaAdded)), "amount": result.PaidMoney}), callerIp, result.PaymentMethod, PaymentMethodWaffo)
 	}
 	return nil
 }
@@ -555,7 +638,7 @@ func RechargeWaffoPancake(tradeNo string) (err error) {
 		return errors.New("充值失败，请稍后重试")
 	}
 	if !result.AlreadySettled {
-		RecordLog(result.UserID, LogTypeTopup, fmt.Sprintf("Waffo Pancake充值成功，充值额度: %v，支付金额: %s", logger.FormatQuota(int(result.QuotaAdded)), result.PaidMoney))
+		RecordLog(result.UserID, LogTypeTopup, common.NewMessage("{{provider}} top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}", map[string]any{"provider": "Waffo Pancake", "quota": logger.FormatQuota(int(result.QuotaAdded)), "amount": result.PaidMoney}))
 	}
 	return nil
 }

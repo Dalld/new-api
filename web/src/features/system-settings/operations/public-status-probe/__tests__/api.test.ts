@@ -17,12 +17,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { beforeEach, describe, test } from 'node:test'
+import { beforeEach, describe, test, vi } from 'vitest'
 
 import type { TargetInput } from '../types'
-
-const bunTestModule = 'bun:test'
-const { mock } = await import(bunTestModule)
 
 type ApiCall = {
   method: 'delete' | 'get' | 'post' | 'put'
@@ -54,22 +51,28 @@ async function record(method: ApiCall['method'], args: unknown[]) {
   return { data: { success: true, message: '', data: config } }
 }
 
-mock.module('@/lib/api', () => ({
+apiHolder.record = record
+
+const apiHolder = vi.hoisted(() => ({
+  record: (() => undefined) as (method: string, args: unknown[]) => unknown,
+}))
+
+vi.mock('@/lib/api', () => ({
   api: {
-    delete: (...args: unknown[]) => record('delete', args),
-    get: (...args: unknown[]) => record('get', args),
-    post: (...args: unknown[]) => record('post', args),
-    put: (...args: unknown[]) => record('put', args),
+    delete: (...args: unknown[]) => apiHolder.record('delete', args),
+    get: (...args: unknown[]) => apiHolder.record('get', args),
+    post: (...args: unknown[]) => apiHolder.record('post', args),
+    put: (...args: unknown[]) => apiHolder.record('put', args),
   },
 }))
 
-const {
+import {
   createPublicStatusProbeTarget,
   deletePublicStatusProbeTarget,
   getPublicStatusProbeConfig,
   updatePublicStatusProbeConfig,
   updatePublicStatusProbeTarget,
-} = await import('../api')
+} from '../api'
 
 const target: TargetInput = {
   enabled: true,
